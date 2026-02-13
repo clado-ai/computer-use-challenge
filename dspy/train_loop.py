@@ -32,6 +32,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 RUNS_DIR = PROJECT_DIR / "runs"
 SYSTEM_PROMPT_PATH = PROJECT_DIR / "src" / "prompts" / "SYSTEM.md"
+SYSTEM_BASE_PATH = PROJECT_DIR / "src" / "prompts" / "SYSTEM_BASE.md"
 PROMPT_HISTORY_DIR = SCRIPT_DIR / "prompt_history"
 BROWSER_DATA_DIR = PROJECT_DIR / ".browser-data"
 
@@ -189,6 +190,14 @@ def find_new_files(before: set[str]) -> tuple[Path | None, Path | None]:
 def main(max_iterations: int = 50, initial_target: int = 2) -> None:
     PROMPT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Initialize SYSTEM.md from SYSTEM_BASE.md (start fresh from minimal prompt)
+    if SYSTEM_BASE_PATH.exists():
+        backup_prompt(-1)  # backup the old SYSTEM.md before overwriting
+        shutil.copy2(SYSTEM_BASE_PATH, SYSTEM_PROMPT_PATH)
+        print(f"[train_loop] initialized SYSTEM.md from SYSTEM_BASE.md")
+    else:
+        print(f"[train_loop] WARNING: SYSTEM_BASE.md not found at {SYSTEM_BASE_PATH}")
 
     step_target = initial_target
 

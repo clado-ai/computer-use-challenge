@@ -14,11 +14,34 @@ let browser: Browser | null = null;
 let currentPage: Page | null = null;
 const serverUrl = "http://localhost:9222";
 
+async function resetConnection() {
+  if (browser) {
+    try { await browser.close(); } catch { /* */ }
+  }
+  browser = null;
+  currentPage = null;
+}
+
 async function ensureBrowser(): Promise<Browser> {
   if (browser && browser.isConnected()) return browser;
+
+  // force clean slate
+  await resetConnection();
+
   const res = await fetch(serverUrl);
+  if (!res.ok) throw new Error(`dev-browser server not responding: ${res.status}`);
   const info = (await res.json()) as { wsEndpoint: string };
-  browser = await chromium.connectOverCDP(info.wsEndpoint);
+
+  try {
+    browser = await chromium.connectOverCDP(info.wsEndpoint);
+  } catch (err) {
+    // if CDP connection fails, the server may need a restart
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `cannot connect to dev-browser CDP at ${info.wsEndpoint}: ${msg}\n` +
+      `try restarting the dev-browser server: bun run start-server`
+    );
+  }
   return browser;
 }
 
@@ -149,27 +172,43 @@ export async function executeTool(
   name: string,
   input: Record<string, unknown>,
 ): Promise<string> {
-  try {
-    switch (name) {
-      case "browser_navigate":
-        return await toolNavigate(input.url as string);
-      case "browser_snapshot":
-        return await toolSnapshot();
-      case "browser_action":
-        return await toolAction(
-          input.action as string,
-          input.ref as string | undefined,
-          input.value as string | undefined,
-        );
-      case "browser_evaluate":
-        return await toolEvaluate(input.script as string);
-      default:
-        return `unknown tool: ${name}`;
+  const maxRetries = 2;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      switch (name) {
+        case "browser_navigate":
+          return await toolNavigate(input.url as string);
+        case "browser_snapshot":
+          return await toolSnapshot();
+        case "browser_action":
+          return await toolAction(
+            input.action as string,
+            input.ref as string | undefined,
+            input.value as string | undefined,
+          );
+        case "browser_evaluate":
+          return await toolEvaluate(input.script as string);
+        default:
+          return `unknown tool: ${name}`;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isConnectionError =
+        msg.includes("WebSocket error") ||
+        msg.includes("Target closed") ||
+        msg.includes("Session closed") ||
+        msg.includes("not found in browser") ||
+        msg.includes("Cannot connect");
+
+      if (isConnectionError && attempt < maxRetries) {
+        console.log(`  [retry] connection error, reconnecting (attempt ${attempt + 1})...`);
+        await resetConnection();
+        continue;
+      }
+      return `error: ${msg}`;
     }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return `error: ${msg}`;
   }
+  return "error: max retries exceeded";
 }
 
 async function toolNavigate(url: string): Promise<string> {

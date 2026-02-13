@@ -1,10 +1,10 @@
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { toolDefinitions, executeTool } from "./tools.js";
 import { MetricsTracker } from "./metrics.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const MODEL = "claude-haiku-4-5-20251001";
+const MODEL = "openai/gpt-oss-120b";
 const MAX_TOKENS = 8192;
 const CHALLENGE_URL = "https://serene-frangipane-7fd25b.netlify.app";
 const MAX_TURNS = parseInt(process.env.MAX_TURNS || "300", 10);
@@ -21,11 +21,15 @@ export interface AgentResult {
 }
 
 export async function runAgent(): Promise<AgentResult> {
-  const client = new Anthropic();
+  const client = new OpenAI({
+    baseURL: "https://openrouter.ai/api/v1",
+    apiKey: process.env.OPENROUTER_API_KEY,
+  });
   const metrics = new MetricsTracker();
   const transcript: Array<{ role: string; content: unknown }> = [];
 
-  const messages: Anthropic.Messages.MessageParam[] = [
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: "system", content: SYSTEM_PROMPT },
     {
       role: "user",
       content: `Navigate to ${CHALLENGE_URL} and solve all 30 challenges. Start now.`,
@@ -47,57 +51,69 @@ export async function runAgent(): Promise<AgentResult> {
   while (turnCount < MAX_TURNS && !interrupted) {
     turnCount++;
 
-    const response = await client.messages.create({
+    const response = await client.chat.completions.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT,
       tools: toolDefinitions,
       messages,
+      // @ts-expect-error OpenRouter-specific: pin to Groq provider
+      provider: { order: ["Groq"], allow_fallbacks: false },
     });
 
-    const toolUseBlocks = response.content.filter(
-      (b): b is Anthropic.Messages.ToolUseBlock => b.type === "tool_use",
-    );
+    const choice = response.choices[0];
+    if (!choice) {
+      console.log("\n[agent] no choice in response");
+      break;
+    }
+
+    const message = choice.message;
+    const toolCalls = message.tool_calls ?? [];
+
     metrics.addApiCall(
-      response.usage.input_tokens,
-      response.usage.output_tokens,
-      toolUseBlocks.length,
+      response.usage?.prompt_tokens ?? 0,
+      response.usage?.completion_tokens ?? 0,
+      toolCalls.length,
     );
 
-    for (const block of response.content) {
-      if (block.type === "text" && block.text.trim()) {
-        console.log(`[agent] ${block.text.trim().slice(0, 200)}`);
+    if (message.content?.trim()) {
+      console.log(`[agent] ${message.content.trim().slice(0, 200)}`);
 
-        const stepMatch = block.text.match(/step\s+(\d+)/i);
-        if (stepMatch) {
-          const stepNum = parseInt(stepMatch[1] ?? "0", 10);
-          const completed = stepNum - 1;
-          if (completed > stepsCompleted && completed <= 30) {
-            stepsCompleted = completed;
-            console.log(`  >> completed step ${stepsCompleted}/30 (now on step ${stepNum})`);
-          }
+      const stepMatch = message.content.match(/step\s+(\d+)/i);
+      if (stepMatch) {
+        const stepNum = parseInt(stepMatch[1] ?? "0", 10);
+        const completed = stepNum - 1;
+        if (completed > stepsCompleted && completed <= 30) {
+          stepsCompleted = completed;
+          console.log(`  >> completed step ${stepsCompleted}/30 (now on step ${stepNum})`);
         }
       }
     }
 
     // save to transcript
-    transcript.push({ role: "assistant", content: response.content });
+    transcript.push({ role: "assistant", content: message });
 
-    if (response.stop_reason === "end_turn") {
-      console.log("\n[agent] finished (end_turn)");
+    if (choice.finish_reason === "stop" || toolCalls.length === 0) {
+      if (choice.finish_reason === "stop") {
+        console.log("\n[agent] finished (stop)");
+      } else {
+        console.log(`\n[agent] stopped: ${choice.finish_reason}`);
+      }
       break;
     }
 
-    if (response.stop_reason !== "tool_use" || toolUseBlocks.length === 0) {
-      console.log(`\n[agent] stopped: ${response.stop_reason}`);
-      break;
-    }
+    // append assistant message (with tool_calls) to conversation
+    messages.push(message);
 
     // execute tool calls
-    const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
-    for (const toolUse of toolUseBlocks) {
-      const toolName = toolUse.name;
-      const toolInput = toolUse.input as Record<string, unknown>;
+    for (const toolCall of toolCalls) {
+      if (toolCall.type !== "function") continue;
+      const toolName = toolCall.function.name;
+      let toolInput: Record<string, unknown>;
+      try {
+        toolInput = JSON.parse(toolCall.function.arguments);
+      } catch {
+        toolInput = {};
+      }
 
       const shortInput =
         toolName === "browser_evaluate"
@@ -119,14 +135,16 @@ export async function runAgent(): Promise<AgentResult> {
 
       console.log(`  [result] ${truncated.slice(0, 120).replace(/\n/g, " ")}...`);
 
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: toolUse.id,
+      // append tool result message
+      messages.push({
+        role: "tool",
+        tool_call_id: toolCall.id,
         content: truncated,
       });
 
-      // detect step from tool results (e.g. "Step 5" visible in snapshot)
-      // "Step N" in results means we're on step N, so completed N-1
+      transcript.push({ role: "tool", content: { tool_call_id: toolCall.id, name: toolName, result: truncated } });
+
+      // detect step from tool results
       const resultStepMatch = result.match(/(?:step|challenge)\s+(\d+)/i);
       if (resultStepMatch) {
         const stepNum = parseInt(resultStepMatch[1] ?? "0", 10);
@@ -136,7 +154,6 @@ export async function runAgent(): Promise<AgentResult> {
         }
       }
 
-      // early exit: stop processing more tool results once we hit target
       if (stepsCompleted >= MAX_STEPS) {
         break;
       }
@@ -148,19 +165,21 @@ export async function runAgent(): Promise<AgentResult> {
       break;
     }
 
-    messages.push({ role: "assistant", content: response.content });
-    messages.push({ role: "user", content: toolResults });
-    transcript.push({ role: "user", content: toolResults });
-
-    // clear context on step transition — replace with step-aware prompt
+    // clear context on step transition, but keep last tool result so agent knows the new step
     if (stepsCompleted > prevStepsCompleted) {
       console.log(`[context] step ${prevStepsCompleted} → ${stepsCompleted}, clearing context`);
       const nextStep = stepsCompleted + 1;
+      // grab the last tool result to carry forward
+      const lastToolMsg = [...messages].reverse().find(m => m.role === "tool");
+      const lastResult = lastToolMsg && "content" in lastToolMsg ? String(lastToolMsg.content) : "";
       messages.length = 0;
-      messages.push({
-        role: "user",
-        content: `You are on step ${nextStep} of 30. The browser is already open on the challenge page — do NOT use browser_navigate. Take a snapshot and solve this step.`,
-      });
+      messages.push(
+        { role: "system", content: SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: `You are now on step ${nextStep} of 30. The browser is already open — do NOT use browser_navigate. Solve this step. Here is the current page content:\n\n${lastResult}`,
+        },
+      );
       prevStepsCompleted = stepsCompleted;
     }
   }

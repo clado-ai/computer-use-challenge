@@ -8,7 +8,7 @@
     "typecheck": "bunx tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.52.0",
+    "openai": "^6.21.0",
     "playwright": "^1.49.0"
   },
   "devDependencies": {

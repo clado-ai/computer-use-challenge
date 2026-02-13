@@ -25,9 +25,9 @@ export interface RunMetrics {
   steps: StepMetrics[];
 }
 
-// opus 4.6 pricing
-const INPUT_COST_PER_M = 15;
-const OUTPUT_COST_PER_M = 75;
+// gpt-oss-120b pricing (openrouter)
+const INPUT_COST_PER_M = 0.039;
+const OUTPUT_COST_PER_M = 0.19;
 
 export class MetricsTracker {
   private runStart = Date.now();

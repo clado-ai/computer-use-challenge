@@ -4,7 +4,7 @@ import {
   type Page,
   type ElementHandle,
 } from "playwright";
-import type Anthropic from "@anthropic-ai/sdk";
+import type OpenAI from "openai";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
@@ -98,68 +98,80 @@ async function getSnapshotScript(): Promise<string> {
 
 // ---- tool definitions ----
 
-export const toolDefinitions: Anthropic.Messages.Tool[] = [
+export const toolDefinitions: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
-    name: "browser_navigate",
-    description:
-      "Navigate to a URL. Automatically suppresses all JavaScript dialogs (alert, confirm, prompt). Returns the page title and URL after loading.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        url: { type: "string", description: "The URL to navigate to" },
+    type: "function",
+    function: {
+      name: "browser_navigate",
+      description:
+        "Navigate to a URL. Automatically suppresses all JavaScript dialogs (alert, confirm, prompt). Returns the page title and URL after loading.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "The URL to navigate to" },
+        },
+        required: ["url"],
       },
-      required: ["url"],
     },
   },
   {
-    name: "browser_snapshot",
-    description:
-      "Get an ARIA accessibility snapshot of the current page. Returns a YAML tree with interactive elements labeled [ref=eN]. Use these refs with browser_action.",
-    input_schema: {
-      type: "object" as const,
-      properties: {},
+    type: "function",
+    function: {
+      name: "browser_snapshot",
+      description:
+        "Get an ARIA accessibility snapshot of the current page. Returns a YAML tree with interactive elements labeled [ref=eN]. Use these refs with browser_action.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
     },
   },
   {
-    name: "browser_action",
-    description:
-      'Perform an action on the page. Actions: "click" (click element by ref), "type" (type text into element by ref), "select" (select option by ref), "press" (press a key like Enter, Tab, Escape), "scroll" (scroll by ref or page). Use refs from browser_snapshot.',
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        action: {
-          type: "string",
-          enum: ["click", "type", "select", "press", "scroll"],
-          description: "The action to perform",
+    type: "function",
+    function: {
+      name: "browser_action",
+      description:
+        'Perform an action on the page. Actions: "click" (click element by ref), "type" (type text into element by ref), "select" (select option by ref), "press" (press a key like Enter, Tab, Escape), "scroll" (scroll by ref or page). Use refs from browser_snapshot.',
+      parameters: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: ["click", "type", "select", "press", "scroll"],
+            description: "The action to perform",
+          },
+          ref: {
+            type: "string",
+            description:
+              "Element ref from snapshot (e.g. 'e5'). Required for click, type, select.",
+          },
+          value: {
+            type: "string",
+            description:
+              "Text to type, option to select, key to press, or scroll direction (up/down).",
+          },
         },
-        ref: {
-          type: "string",
-          description:
-            "Element ref from snapshot (e.g. 'e5'). Required for click, type, select.",
-        },
-        value: {
-          type: "string",
-          description:
-            "Text to type, option to select, key to press, or scroll direction (up/down).",
-        },
+        required: ["action"],
       },
-      required: ["action"],
     },
   },
   {
-    name: "browser_evaluate",
-    description:
-      "Execute JavaScript in the browser page context. Returns the JSON-serialized result. Use for: reading hidden DOM content, manipulating elements, dismissing popups, extracting data, dispatching events.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        script: {
-          type: "string",
-          description:
-            "JavaScript code to execute. Must be an expression or IIFE that returns a value.",
+    type: "function",
+    function: {
+      name: "browser_evaluate",
+      description:
+        "Execute JavaScript in the browser page context. Returns the JSON-serialized result. Use for: reading hidden DOM content, manipulating elements, dismissing popups, extracting data, dispatching events.",
+      parameters: {
+        type: "object",
+        properties: {
+          script: {
+            type: "string",
+            description:
+              "JavaScript code to execute. Must be an expression or IIFE that returns a value.",
+          },
         },
+        required: ["script"],
       },
-      required: ["script"],
     },
   },
 ];

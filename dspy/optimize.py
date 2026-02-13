@@ -576,7 +576,7 @@ def run_optimization(
 
     optimizer = dspy.GEPA(
         metric=metric,
-        max_metric_calls=20,
+        max_metric_calls=75,
         track_stats=True,
         reflection_minibatch_size=3,
         reflection_lm=reflection_lm,
@@ -683,7 +683,7 @@ def main() -> None:
 
         optimizer = dspy.GEPA(
             metric=metric,
-            max_metric_calls=20,
+            max_metric_calls=75,
             track_stats=True,
             reflection_minibatch_size=3,
             reflection_lm=reflection_lm,

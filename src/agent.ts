@@ -263,6 +263,10 @@ export async function runAgent(): Promise<AgentResult> {
           stepsCompleted = completed;
         }
       }
+      // detect /finish page (step 30 completion)
+      if (result.includes("YOU ARE HERE") || result.includes("NAVIGATED_TO_FINISH")) {
+        stepsCompleted = 30;
+      }
 
       if (stepsCompleted >= MAX_STEPS) {
         break;
@@ -278,13 +282,12 @@ export async function runAgent(): Promise<AgentResult> {
     // track turns on same step for stuck detection
     turnsOnSameStep++;
 
-    // clear context on step transition, but keep last tool result so agent knows the new step
+    // clear context on step transition
     if (stepsCompleted > prevStepsCompleted) {
       console.log(`[context] step ${prevStepsCompleted} → ${stepsCompleted}, clearing context`);
       saveTrajectory();
       turnsOnSameStep = 0;
       const nextStep = stepsCompleted + 1;
-      // grab the last tool result to carry forward
       const lastToolMsg = [...messages].reverse().find(m => m.role === "tool");
       const lastResult = lastToolMsg && "content" in lastToolMsg ? String(lastToolMsg.content) : "";
       messages.length = 0;
@@ -297,8 +300,8 @@ export async function runAgent(): Promise<AgentResult> {
       );
       prevStepsCompleted = stepsCompleted;
     }
-    // stuck detection: sessionStorage bypass for steps 18-20 after 10 turns
-    else if (turnsOnSameStep === 10 && stepsCompleted + 1 >= 18 && stepsCompleted + 1 <= 20) {
+    // stuck detection: sessionStorage bypass for steps 18-20 and step 30 after 5 turns
+    else if (turnsOnSameStep === 5 && ((stepsCompleted + 1 >= 18 && stepsCompleted + 1 <= 20) || stepsCompleted + 1 === 30)) {
       const currentStep = stepsCompleted + 1;
       console.log(`[stuck] ${turnsOnSameStep} turns on step ${currentStep}, attempting sessionStorage bypass...`);
       const bypassResult = await bypassStepViaSessionStorage(currentStep);
@@ -328,7 +331,7 @@ export async function runAgent(): Promise<AgentResult> {
           },
         );
       }
-      // If bypass failed on 18-20, fall through — next iteration will hit the general stuck recovery at 15
+      // If bypass failed, fall through — next iteration will hit the general stuck recovery at 15
     }
     // general stuck detection: hard reset context every 15 turns
     else if (turnsOnSameStep > 0 && turnsOnSameStep % 15 === 0) {

@@ -40,7 +40,6 @@ async function launchBrowser(): Promise<BrowserContext> {
 
 function isContextAlive(ctx: BrowserContext): boolean {
   try {
-    // accessing pages() on a closed context throws
     ctx.pages();
     return true;
   } catch {
@@ -49,12 +48,10 @@ function isContextAlive(ctx: BrowserContext): boolean {
 }
 
 async function ensurePage(): Promise<Page> {
-  // check if existing page is still usable
   if (currentPage && !currentPage.isClosed() && context && isContextAlive(context)) {
     return currentPage;
   }
 
-  // context is dead or missing — clean up and re-launch
   if (context) {
     if (!isContextAlive(context)) {
       console.log("[browser] context died, re-launching...");
@@ -66,11 +63,9 @@ async function ensurePage(): Promise<Page> {
 
   context = await launchBrowser();
 
-  // use existing page or create new one
   const pages = context.pages();
   currentPage = pages[0] ?? (await context.newPage());
 
-  // set up dialog auto-dismiss
   currentPage.on("dialog", async (dialog) => {
     try {
       await dialog.dismiss();
@@ -82,7 +77,6 @@ async function ensurePage(): Promise<Page> {
   return currentPage;
 }
 
-// load snapshot script from dev-browser
 const SNAPSHOT_SCRIPT_PATH = path.resolve(
   import.meta.dir,
   "../../dev-browser/skills/dev-browser/src/snapshot/browser-script.ts",
@@ -95,8 +89,6 @@ async function getSnapshotScript(): Promise<string> {
   snapshotScriptCache = mod.getSnapshotScript() as string;
   return snapshotScriptCache;
 }
-
-// ---- tool definitions ----
 
 export const toolDefinitions: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
@@ -231,6 +223,8 @@ async function toolNavigate(url: string): Promise<string> {
     window.confirm = () => true;
     window.prompt = () => "";
     window.onbeforeunload = null;
+    // Prevent form submissions from navigating (destroys Playwright execution context)
+    document.addEventListener('submit', e => e.preventDefault(), true);
   `);
 
   // brief wait for dynamic content
@@ -316,7 +310,22 @@ async function toolEvaluate(script: string): Promise<string> {
     if (result === undefined || result === null) return "null";
     return typeof result === "string" ? result : JSON.stringify(result, null, 2);
   } catch (err) {
-    return `error: ${err instanceof Error ? err.message : String(err)}`;
+    const msg = err instanceof Error ? err.message : String(err);
+
+    if (msg.includes("Execution context was destroyed")) {
+      await new Promise(r => setTimeout(r, 800));
+      try {
+        const pg = await ensurePage();
+        const settled = await pg.evaluate(
+          "document.querySelector('h1')?.parentElement?.innerText?.substring(0, 800)",
+        );
+        return `[page reloaded after submit] ${settled || "(empty page)"}`;
+      } catch {
+        return `error: evaluate: ${msg}`;
+      }
+    }
+
+    return `error: evaluate: ${msg}`;
   }
 }
 

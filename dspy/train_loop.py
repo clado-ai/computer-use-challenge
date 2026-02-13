@@ -53,7 +53,7 @@ MAX_TURNS = 300                 # safety cap, agent stops on step target not tur
 SLIDING_WINDOW_SIZE = 5         # history for GEPA
 SUBPROCESS_TIMEOUT = 3600       # 60 minutes
 MAX_CONSECUTIVE_FAILURES = 3    # stop after this many agent crashes in a row
-DEFAULT_PARALLEL_AGENTS = 5     # run N agents concurrently per iteration
+DEFAULT_PARALLEL_AGENTS = 3     # run N agents concurrently per iteration
 
 
 # ---- state management ----

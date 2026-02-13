@@ -4,7 +4,7 @@ import { MetricsTracker } from "./metrics.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const MODEL = "claude-opus-4-6";
+const MODEL = "claude-haiku-4-5-20251001";
 const MAX_TOKENS = 8192;
 const CHALLENGE_URL = "https://serene-frangipane-7fd25b.netlify.app";
 const MAX_TURNS = parseInt(process.env.MAX_TURNS || "300", 10);

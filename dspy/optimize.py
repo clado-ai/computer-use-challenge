@@ -319,21 +319,29 @@ PROPOSED SYSTEM PROMPT (what the agent would be told next time):
 ---
 
 Analyze:
-1. WHAT WENT WRONG in the rollout? List the top 3-5 failures (describe patterns, not specific step solutions).
-2. WHAT WENT RIGHT? List the top 3 successes.
-3. Does the proposed prompt DIRECTLY ADDRESS each failure? For each failure, say YES/NO and why.
-4. Does the prompt introduce any BAD ADVICE that could cause new failures?
-5. Is the prompt CONCISE enough? (verbose prompts waste tokens and confuse the agent)
+1. EFFICIENCY: How many tool calls and how much time did the agent use per step completed?
+   - Fewer tool calls per step = better. Target: ~3-5 tool calls per step.
+   - Less time per step = better. Wasted turns (errors, redundant snapshots, re-reading source code) are costly.
+2. WHAT WENT WRONG? List the top 3-5 failure PATTERNS (not specific step solutions).
+3. WHAT WENT RIGHT? List the top 3 successes.
+4. Does the proposed prompt DIRECTLY ADDRESS each failure and encourage efficiency? For each, say YES/NO and why.
+5. Does the prompt introduce any BAD ADVICE that could cause new failures or waste tool calls?
 
-Score 0.0-1.0 where:
-- 1.0 = prompt fixes all observed failures without introducing new problems
-- 0.7 = prompt fixes most failures
-- 0.5 = prompt is generic and doesn't specifically address rollout failures
-- 0.3 = prompt misses critical failures or adds bad advice
-- 0.0 = prompt would make things worse
+Score 0.0-1.0 based on THREE factors equally weighted:
+- EFFICIENCY (0.33): Does the prompt minimize tool calls and time per step? Does it discourage wasteful patterns (redundant snapshots, source code reading, retrying failed approaches)?
+- FAILURE COVERAGE (0.33): Does the prompt address the observed failure patterns?
+- CONCISENESS (0.33): Is the prompt short and actionable? Verbose prompts waste input tokens every single turn.
+
+Scoring guide:
+- 1.0 = maximally efficient, covers all failures, concise
+- 0.7 = good efficiency guidance, covers most failures
+- 0.5 = generic prompt, no specific efficiency or failure guidance
+- 0.3 = misses critical failures, encourages wasteful patterns
+- 0.0 = would make things worse
 
 Respond with JSON:
 {{
+  "efficiency_analysis": "X tool calls across Y steps = Z calls/step. Time: Ws. Wasted turns: ...",
   "what_went_wrong": ["failure1", "failure2", ...],
   "what_went_right": ["success1", "success2", ...],
   "failure_coverage": {{"failure1": "YES/NO - reason", ...}},
@@ -354,6 +362,10 @@ Respond with JSON:
 
                 # build rich feedback from the analysis
                 feedback_parts = []
+
+                eff = result.get("efficiency_analysis", "")
+                if eff:
+                    feedback_parts.append("EFFICIENCY: " + eff)
 
                 wrong = result.get("what_went_wrong", [])
                 if wrong:

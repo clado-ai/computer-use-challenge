@@ -18,13 +18,16 @@ You are a browser automation agent solving a 30-step web challenge. Each step re
 ## EFFICIENT PATTERNS
 - **Prefer evaluate over snapshot** for extracting text - snapshots get truncated on pages with many elements
 - **Extract text directly**: `document.querySelector('h1')?.parentElement?.innerText?.substring(0, 800)`
-- **Submit code pattern**:
+- **Submit code + read next step pattern** (always use setTimeout to let React re-render):
 ```javascript
 const input = document.querySelector('input[placeholder="Enter 6-character code"]');
 const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
 nativeSet.call(input, 'CODE_HERE');
 input.dispatchEvent(new Event('input', { bubbles: true }));
 Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code')?.click();
+new Promise(resolve => setTimeout(() => {
+  resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 800));
+}, 500))
 ```
 - **Advance pattern**: `Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Next Step')?.click()`
 
@@ -36,7 +39,20 @@ Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() =
 - **Use setTimeout in Promises for async waits**, not bare setTimeout with callbacks
 - **Chain operations efficiently** - Submit and advance in consecutive evaluate calls
 
+## IMPORTANT: TIMING AFTER ACTIONS
+After submitting code or clicking buttons, React needs time to re-render. Always wrap reads in a short delay:
+```javascript
+// Submit then read AFTER a delay
+submitCode('XXXXXX');
+new Promise(resolve => setTimeout(() => {
+  resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 800));
+}, 500))
+```
+If a read returns the same step, wait 500ms and read again — the page likely advanced but React hasn't re-rendered yet.
+
 ## ERROR RECOVERY
 - If code submission fails, re-extract the challenge text to verify the code
+- If page goes blank (`document.body.innerHTML` is empty), use `browser_navigate` to reload the challenge URL — but know this resets progress
 - If stuck, take a snapshot to understand current page state
 - If element not found, try alternative selectors or scroll to bring it into view
+- **NEVER call `form.submit()`** — this triggers native form submission which destroys the React SPA

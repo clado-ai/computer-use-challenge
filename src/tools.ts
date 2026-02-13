@@ -24,7 +24,15 @@ async function launchBrowser(): Promise<BrowserContext> {
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
     headless,
     viewport: { width: 1280, height: 720 },
-    args: ["--disable-blink-features=AutomationControlled"],
+    args: [
+      "--disable-blink-features=AutomationControlled",
+      "--disable-dev-shm-usage",     // prevent /dev/shm OOM crashes
+      "--disable-gpu",                // reduce memory usage
+      "--no-sandbox",                 // avoid sandbox-related crashes
+      "--disable-extensions",
+      "--js-flags=--max-old-space-size=512",  // cap V8 heap
+    ],
+    timeout: 30000,
   });
   console.log("[browser] ready");
   return ctx;
@@ -188,17 +196,13 @@ export async function executeTool(
     return await executeToolInner(name, input);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // if the browser context died, force a re-launch and retry once
+    // if the browser context died, reset state but DON'T silently relaunch
+    // — the agent needs to know so it can re-navigate
     if (msg.includes("has been closed") || msg.includes("Target closed")) {
-      console.log("[browser] context lost, recovering...");
+      console.log("[browser] context lost — browser crashed");
       context = null;
       currentPage = null;
-      try {
-        return await executeToolInner(name, input);
-      } catch (retryErr) {
-        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-        return `error: ${retryMsg}`;
-      }
+      return `error: browser crashed. Use browser_navigate to reload the challenge URL and continue from where you left off.`;
     }
     return `error: ${msg}`;
   }
@@ -290,7 +294,13 @@ async function toolAction(
 async function toolEvaluate(script: string): Promise<string> {
   const page = await ensurePage();
   try {
-    const result = await page.evaluate(script);
+    // 30s timeout to prevent hanging evaluate calls from crashing the browser
+    const result = await Promise.race([
+      page.evaluate(script),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("evaluate timed out after 30s")), 30000),
+      ),
+    ]);
     if (result === undefined || result === null) return "null";
     return typeof result === "string" ? result : JSON.stringify(result, null, 2);
   } catch (err) {

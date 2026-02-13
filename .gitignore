@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+*.log
+tmp/
+screenshots/
+runs/
+dspy/prompts/
+dspy/data/
+__pycache__/
+.browser-data/

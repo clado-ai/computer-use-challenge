@@ -1,0 +1,18 @@
+{
+  "name": "computer-use-challenge",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "start-server": "cd ../dev-browser/skills/dev-browser && bun run scripts/start-server.ts",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "playwright": "^1.49.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.9",
+    "typescript": "^5.0.0"
+  }
+}

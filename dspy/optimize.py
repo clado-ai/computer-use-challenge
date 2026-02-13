@@ -115,11 +115,11 @@ def extract_rollout_steps(transcript_data: list[dict]) -> list[dict]:
                 if isinstance(block, dict):
                     if block.get("type") == "text":
                         text = block.get("text", "")
-                        current_step["agent_text"].append(text[:300])
+                        current_step["agent_text"].append(text[:1000])
                     elif block.get("type") == "tool_use":
                         call = {
                             "tool": block.get("name", ""),
-                            "input": str(block.get("input", ""))[:200],
+                            "input": str(block.get("input", ""))[:500],
                         }
                         current_step["tool_calls"].append(call)
 
@@ -128,7 +128,7 @@ def extract_rollout_steps(transcript_data: list[dict]) -> list[dict]:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     result_content = block.get("content", "")
                     if isinstance(result_content, str):
-                        current_step["tool_results"].append(result_content[:300])
+                        current_step["tool_results"].append(result_content[:1000])
 
             # a tool_result batch marks the end of an agent turn
             if current_step["tool_calls"]:
@@ -176,19 +176,19 @@ def analyze_rollout(runs_dir: Path) -> str:
             errors = [r for r in step["tool_results"] if "error" in r.lower()]
             successes = [r for r in step["tool_results"] if "error" not in r.lower()]
             tool_names = [c["tool"] for c in step["tool_calls"]]
-            agent_reasoning = " ".join(step["agent_text"])[:200]
+            agent_reasoning = " ".join(step["agent_text"])[:500]
 
             status = "FAIL" if errors else "OK"
             turn_summary = f"turn {i + 1} [{status}]: tools={tool_names}"
 
             if agent_reasoning.strip():
-                turn_summary += f" | reasoning: {agent_reasoning[:100]}"
+                turn_summary += f" | reasoning: {agent_reasoning[:300]}"
 
             if errors:
-                turn_summary += f" | errors: {'; '.join(e[:100] for e in errors[:2])}"
+                turn_summary += f" | errors: {'; '.join(e[:300] for e in errors[:3])}"
 
             if successes:
-                turn_summary += f" | results: {'; '.join(s[:80] for s in successes[:2])}"
+                turn_summary += f" | results: {'; '.join(s[:300] for s in successes[:3])}"
 
             parts.append(turn_summary)
 
@@ -286,7 +286,8 @@ def make_metric(judge_lm: dspy.LM, rollout: str) -> Callable:
         gold: dspy.Example,
         pred: dspy.Prediction,
         trace: Optional[Any] = None,
-        **kwargs: Any,
+        pred_name: Optional[str] = None,
+        pred_trace: Optional[Any] = None,
     ) -> dspy.Prediction:
         prompt = pred.optimized_prompt
 
@@ -298,12 +299,12 @@ Focus on: tool usage patterns, error recovery strategies, efficiency improvement
 
 ACTUAL ROLLOUT (what happened when the agent ran):
 ---
-{rollout[:3000]}
+{rollout[:10000]}
 ---
 
 PROPOSED SYSTEM PROMPT (what the agent would be told next time):
 ---
-{prompt[:3000]}
+{prompt[:5000]}
 ---
 
 Analyze:
@@ -476,17 +477,17 @@ def analyze_trajectories(
             errors = [r for r in step["tool_results"] if "error" in r.lower()]
             successes = [r for r in step["tool_results"] if "error" not in r.lower()]
             tool_names = [c["tool"] for c in step["tool_calls"]]
-            agent_reasoning = " ".join(step["agent_text"])[:200]
+            agent_reasoning = " ".join(step["agent_text"])[:500]
 
             status = "FAIL" if errors else "OK"
             turn_summary = f"turn {i + 1} [{status}]: tools={tool_names}"
 
             if agent_reasoning.strip():
-                turn_summary += f" | reasoning: {agent_reasoning[:100]}"
+                turn_summary += f" | reasoning: {agent_reasoning[:300]}"
             if errors:
-                turn_summary += f" | errors: {'; '.join(e[:100] for e in errors[:2])}"
+                turn_summary += f" | errors: {'; '.join(e[:300] for e in errors[:3])}"
             if successes:
-                turn_summary += f" | results: {'; '.join(s[:80] for s in successes[:2])}"
+                turn_summary += f" | results: {'; '.join(s[:300] for s in successes[:3])}"
 
             parts.append(turn_summary)
 
@@ -575,7 +576,7 @@ def run_optimization(
 
     optimizer = dspy.GEPA(
         metric=metric,
-        auto="light",
+        max_metric_calls=20,
         track_stats=True,
         reflection_minibatch_size=3,
         reflection_lm=reflection_lm,
@@ -682,7 +683,7 @@ def main() -> None:
 
         optimizer = dspy.GEPA(
             metric=metric,
-            auto="light",
+            max_metric_calls=20,
             track_stats=True,
             reflection_minibatch_size=3,
             reflection_lm=reflection_lm,

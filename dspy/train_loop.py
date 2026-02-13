@@ -41,7 +41,7 @@ BROWSER_DATA_DIR = PROJECT_DIR / ".browser-data"
 
 # ---- defaults ----
 
-DEFAULT_INITIAL_WINDOW = 10     # starting turn budget
+DEFAULT_INITIAL_WINDOW = 30     # starting turn budget
 DEFAULT_MAX_ITERATIONS = 100
 CONSECUTIVE_CLEARS_TO_ADVANCE = 2
 WINDOW_INCREMENT = 10           # add 10 turns per advancement

@@ -1,16 +1,15 @@
 """
 Iterative prompt optimization training loop.
 
-Curriculum-based: runs the agent for a short step window (starting at 2),
-optimizes the prompt via GEPA, restarts, and gradually increases the window
-after consecutive clears.
+Curriculum-based on turn budget (API calls): starts at 10 turns, optimizes
+the prompt via GEPA after each run, advances the budget after consecutive
+clears (agent completed >= 1 step).
 
 Usage:
-    uv run dspy/train_loop.py                      # start fresh
-    uv run dspy/train_loop.py --resume              # resume from saved state
-    uv run dspy/train_loop.py --initial-window 4    # start at 4 steps
-    uv run dspy/train_loop.py --cost-limit 100      # cap total spending
-    uv run dspy/train_loop.py --max-iterations 20   # cap iterations
+    uv run dspy/train_loop.py                          # start fresh
+    uv run dspy/train_loop.py --resume                 # resume from saved state
+    uv run dspy/train_loop.py --initial-window 20      # start at 20 turns
+    uv run dspy/train_loop.py --max-iterations 20      # cap iterations
 """
 
 from __future__ import annotations
@@ -32,6 +31,7 @@ PROJECT_DIR = SCRIPT_DIR.parent  # computer-use-challenge/
 # ensure optimize.py is importable
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
+
 RUNS_DIR = PROJECT_DIR / "runs"
 SYSTEM_PROMPT_PATH = PROJECT_DIR / "src" / "prompts" / "SYSTEM.md"
 ITERATIONS_DIR = SCRIPT_DIR / "iterations"
@@ -41,14 +41,14 @@ BROWSER_DATA_DIR = PROJECT_DIR / ".browser-data"
 
 # ---- defaults ----
 
-DEFAULT_INITIAL_WINDOW = 2
-DEFAULT_COST_LIMIT = 500.0
+DEFAULT_INITIAL_WINDOW = 10     # starting turn budget
 DEFAULT_MAX_ITERATIONS = 100
 CONSECUTIVE_CLEARS_TO_ADVANCE = 2
-WINDOW_INCREMENT = 2
-MAX_WINDOW = 30
+WINDOW_INCREMENT = 10           # add 10 turns per advancement
+MAX_WINDOW = 150                # max turn budget
 SLIDING_WINDOW_SIZE = 3
-SUBPROCESS_TIMEOUT = 600  # 10 minutes
+SUBPROCESS_TIMEOUT = 600        # 10 minutes
+MAX_CONSECUTIVE_FAILURES = 3    # stop after this many agent crashes in a row
 
 
 # ---- state management ----
@@ -66,8 +66,9 @@ def save_state(state: dict) -> None:
 def make_fresh_state(initial_window: int) -> dict:
     return {
         "iteration": 0,
-        "step_window": initial_window,
+        "turn_window": initial_window,
         "consecutive_clears": 0,
+        "consecutive_failures": 0,
         "trajectory_history": [],
         "total_cost": 0.0,
     }
@@ -114,8 +115,8 @@ def backup_prompt(prompt_path: Path, iteration: int) -> Path:
 
 # ---- agent runner ----
 
-def run_agent(step_window: int) -> tuple[int, str]:
-    """Run the agent subprocess with MAX_STEPS set.
+def run_agent(turn_window: int) -> tuple[int, str]:
+    """Run the agent subprocess with MAX_TURNS set.
 
     Returns (return_code, stdout+stderr output).
     """
@@ -123,10 +124,10 @@ def run_agent(step_window: int) -> tuple[int, str]:
     if BROWSER_DATA_DIR.exists():
         shutil.rmtree(BROWSER_DATA_DIR)
 
-    env = {**os.environ, "MAX_STEPS": str(step_window)}
+    env = {**os.environ, "MAX_TURNS": str(turn_window)}
 
     print(f"\n{'='*60}")
-    print(f"RUNNING AGENT: MAX_STEPS={step_window}")
+    print(f"RUNNING AGENT: MAX_TURNS={turn_window}")
     print(f"{'='*60}\n")
 
     try:
@@ -165,14 +166,17 @@ def extract_cost(metrics: dict) -> float:
 
 def check_curriculum(
     steps_completed: int,
-    step_window: int,
+    turn_window: int,
     consecutive_clears: int,
 ) -> tuple[int, int, bool]:
-    """Check if we should advance the curriculum window.
+    """Check if we should advance the turn budget.
+
+    A "clear" = agent completed >= 1 step within the turn budget.
+    After CONSECUTIVE_CLEARS_TO_ADVANCE clears, increase turn budget.
 
     Returns (new_window, new_consecutive_clears, advanced).
     """
-    cleared = steps_completed >= step_window
+    cleared = steps_completed >= 1
 
     if cleared:
         consecutive_clears += 1
@@ -180,11 +184,11 @@ def check_curriculum(
         consecutive_clears = 0
 
     advanced = False
-    new_window = step_window
+    new_window = turn_window
 
     if consecutive_clears >= CONSECUTIVE_CLEARS_TO_ADVANCE:
-        new_window = min(step_window + WINDOW_INCREMENT, MAX_WINDOW)
-        if new_window > step_window:
+        new_window = min(turn_window + WINDOW_INCREMENT, MAX_WINDOW)
+        if new_window > turn_window:
             advanced = True
             consecutive_clears = 0  # reset after advancing
 
@@ -222,10 +226,10 @@ def run_iteration(state: dict) -> dict:
     Returns the updated state dict.
     """
     iteration = state["iteration"]
-    step_window = state["step_window"]
+    turn_window = state["turn_window"]
 
     print(f"\n{'#'*60}")
-    print(f"# ITERATION {iteration} | window={step_window} steps")
+    print(f"# ITERATION {iteration} | budget={turn_window} turns")
     print(f"# consecutive_clears={state['consecutive_clears']} | total_cost=${state['total_cost']:.2f}")
     print(f"{'#'*60}")
 
@@ -236,22 +240,26 @@ def run_iteration(state: dict) -> dict:
 
     # 2. run the agent
     files_before = get_run_files_before(RUNS_DIR)
-    return_code, agent_output = run_agent(step_window)
+    return_code, agent_output = run_agent(turn_window)
 
     # 3. find new files
     run_file, transcript_file = find_new_files(RUNS_DIR, files_before)
 
     if not run_file:
         print("[train_loop] WARNING: no run file found, agent may have crashed")
-        # still record the iteration
         steps_completed = 0
-        run_metrics = {"stepsCompleted": 0, "totalCost": 0}
+        run_metrics = {"stepsCompleted": 0, "totalCost": 0, "totalApiCalls": 0, "totalToolCalls": 0}
+        state["consecutive_failures"] = state.get("consecutive_failures", 0) + 1
     else:
         run_metrics = read_metrics(run_file)
         steps_completed = run_metrics.get("stepsCompleted", 0)
+        state["consecutive_failures"] = 0  # reset on successful run
 
     agent_cost = extract_cost(run_metrics)
-    print(f"\n[train_loop] steps_completed={steps_completed}/{step_window}, cost=${agent_cost:.2f}")
+    turns_used = run_metrics.get("totalApiCalls", 0)
+    tool_calls = run_metrics.get("totalToolCalls", 0)
+    print(f"\n[train_loop] steps={steps_completed}, turns={turns_used}/{turn_window}, "
+          f"tools={tool_calls}, cost=${agent_cost:.2f}")
 
     # 4. record in history
     history_entry = {
@@ -259,13 +267,15 @@ def run_iteration(state: dict) -> dict:
         "run_file": str(run_file) if run_file else None,
         "transcript_file": str(transcript_file) if transcript_file else None,
         "steps_completed": steps_completed,
-        "step_window": step_window,
+        "turn_window": turn_window,
+        "turns_used": turns_used,
+        "tool_calls": tool_calls,
     }
     state["trajectory_history"].append(history_entry)
 
     # 5. curriculum check
     new_window, new_consecutive, advanced = check_curriculum(
-        steps_completed, step_window, state["consecutive_clears"]
+        steps_completed, turn_window, state["consecutive_clears"]
     )
 
     # 6. get sliding window of trajectories for optimization
@@ -288,7 +298,6 @@ def run_iteration(state: dict) -> dict:
             optimized_prompt = opt_result["optimized_prompt"]
             judge_feedback = opt_result["judge_feedback"]
             rollout_analysis = opt_result["rollout_analysis"]
-            # estimate optimization cost (rough: ~$1-3 per GEPA run)
             optimization_cost = 2.0  # conservative estimate
         except Exception as e:
             print(f"[train_loop] optimization failed: {e}")
@@ -320,7 +329,9 @@ def run_iteration(state: dict) -> dict:
     iteration_data = {
         "iteration": iteration,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "step_window": step_window,
+        "turn_window": turn_window,
+        "turns_used": turns_used,
+        "tool_calls": tool_calls,
         "steps_completed": steps_completed,
         "run_metrics": run_metrics,
         "transcript": transcript_data,
@@ -346,7 +357,7 @@ def run_iteration(state: dict) -> dict:
 
     # 10. update state
     state["iteration"] = iteration + 1
-    state["step_window"] = new_window
+    state["turn_window"] = new_window
     state["consecutive_clears"] = new_consecutive
     state["total_cost"] = round(state["total_cost"] + total_iter_cost, 4)
 
@@ -354,7 +365,7 @@ def run_iteration(state: dict) -> dict:
 
     # summary
     print(f"\n--- iteration {iteration} summary ---")
-    print(f"  steps: {steps_completed}/{step_window}")
+    print(f"  steps: {steps_completed} | turns: {turns_used}/{turn_window} | tools: {tool_calls}")
     print(f"  cost: ${total_iter_cost:.2f} (agent=${agent_cost:.2f} + opt=${optimization_cost:.2f})")
     print(f"  curriculum: clears={new_consecutive}, advanced={advanced}, next_window={new_window}")
     print(f"  total_cost: ${state['total_cost']:.2f}")
@@ -374,7 +385,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--initial-window", type=int, default=DEFAULT_INITIAL_WINDOW,
-        help=f"Initial step window (default: {DEFAULT_INITIAL_WINDOW})",
+        help=f"Initial turn budget (default: {DEFAULT_INITIAL_WINDOW})",
     )
     parser.add_argument(
         "--max-iterations", type=int, default=DEFAULT_MAX_ITERATIONS,
@@ -390,7 +401,7 @@ def main() -> None:
             state = make_fresh_state(args.initial_window)
         else:
             print(f"[train_loop] resuming from iteration {state['iteration']}, "
-                  f"window={state['step_window']}, cost=${state['total_cost']:.2f}")
+                  f"window={state['turn_window']} turns, cost=${state['total_cost']:.2f}")
     else:
         state = make_fresh_state(args.initial_window)
 
@@ -399,13 +410,18 @@ def main() -> None:
     PROMPT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
-    print(f"[train_loop] starting: window={state['step_window']}, "
+    print(f"[train_loop] starting: window={state['turn_window']} turns, "
           f"max_iter={args.max_iterations}")
 
     while state["iteration"] < args.max_iterations:
         # window cap
-        if state["step_window"] > MAX_WINDOW:
-            print(f"\n[train_loop] MAX WINDOW reached: {state['step_window']}")
+        if state["turn_window"] > MAX_WINDOW:
+            print(f"\n[train_loop] MAX WINDOW reached: {state['turn_window']} turns")
+            break
+
+        # consecutive failure guard
+        if state.get("consecutive_failures", 0) >= MAX_CONSECUTIVE_FAILURES:
+            print(f"\n[train_loop] STOPPING: {MAX_CONSECUTIVE_FAILURES} consecutive agent failures")
             break
 
         try:
@@ -419,13 +435,13 @@ def main() -> None:
             import traceback
             traceback.print_exc()
             save_state(state)
-            # continue to next iteration
             state["iteration"] += 1
+            state["consecutive_failures"] = state.get("consecutive_failures", 0) + 1
 
     print(f"\n{'='*60}")
     print(f"TRAINING COMPLETE")
     print(f"  iterations: {state['iteration']}")
-    print(f"  final window: {state['step_window']}")
+    print(f"  final window: {state['turn_window']} turns")
     print(f"  total cost: ${state['total_cost']:.2f}")
     print(f"{'='*60}")
 

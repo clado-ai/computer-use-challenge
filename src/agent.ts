@@ -8,6 +8,7 @@ const MODEL = "claude-opus-4-6";
 const MAX_TOKENS = 8192;
 const CHALLENGE_URL = "https://serene-frangipane-7fd25b.netlify.app";
 const MAX_STEPS = parseInt(process.env.MAX_STEPS || "30", 10);
+const MAX_TURNS = parseInt(process.env.MAX_TURNS || "150", 10);
 
 // load system prompt
 const systemPromptPath = path.join(import.meta.dir, "prompts", "SYSTEM.md");
@@ -35,10 +36,10 @@ export async function runAgent(): Promise<AgentResult> {
   let turnCount = 0;
 
   metrics.startAgent();
-  console.log(`starting agent with ${MODEL} (target: step ${MAX_STEPS})...`);
+  console.log(`starting agent with ${MODEL} (target: step ${MAX_STEPS}, max turns: ${MAX_TURNS})...`);
   console.log(`challenge: ${CHALLENGE_URL}\n`);
 
-  while (true) {
+  while (turnCount < MAX_TURNS) {
     turnCount++;
 
     const response = await client.messages.create({
@@ -149,6 +150,10 @@ export async function runAgent(): Promise<AgentResult> {
     if (messages.length > 60) {
       trimContext(messages);
     }
+  }
+
+  if (turnCount >= MAX_TURNS) {
+    console.log(`\n[agent] reached turn limit (${MAX_TURNS}), stopping.`);
   }
 
   metrics.endAgent();

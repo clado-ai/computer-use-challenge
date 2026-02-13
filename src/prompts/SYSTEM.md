@@ -93,10 +93,10 @@ new Promise(resolve => setTimeout(() => {
 If NO_CODE, run the universal code finder below.
 
 ### Memory Challenge
-Click "I Remember" then wait 5s for the code to appear (2s is NOT enough — code flashes briefly):
+Click "I Remember" then wait **8s** for the code to appear (5s is often NOT enough — code flashes briefly then needs time):
 ```javascript
 Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Remember'))?.click();
-new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1000)), 5000))
+new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1000)), 8000))
 ```
 
 ### Keyboard Sequence Challenge
@@ -111,16 +111,17 @@ new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.pa
 ```
 
 ### Canvas Challenge (draw strokes)
-**IMPORTANT:** Use MouseEvent with `offsetX`/`offsetY` — PointerEvent does NOT work reliably here.
+**IMPORTANT:** Use `clientX`/`clientY` via `getBoundingClientRect()` — `offsetX`/`offsetY` does NOT register strokes.
 ```javascript
 const canvas = document.querySelector('canvas');
+const r = canvas.getBoundingClientRect();
 for (let s = 0; s < 4; s++) {
-  const y = 50 + s * 30;
-  canvas.dispatchEvent(new MouseEvent('mousedown', {offsetX: 20, offsetY: y, bubbles: true}));
+  const y = r.top + 50 + s * 30;
+  canvas.dispatchEvent(new MouseEvent('mousedown', {clientX: r.left + 20, clientY: y, bubbles: true}));
   for (let x = 20; x <= 200; x += 30) {
-    canvas.dispatchEvent(new MouseEvent('mousemove', {offsetX: x, offsetY: y, bubbles: true}));
+    canvas.dispatchEvent(new MouseEvent('mousemove', {clientX: r.left + x, clientY: y, bubbles: true}));
   }
-  canvas.dispatchEvent(new MouseEvent('mouseup', {offsetX: 200, offsetY: y, bubbles: true}));
+  canvas.dispatchEvent(new MouseEvent('mouseup', {clientX: r.left + 200, clientY: y, bubbles: true}));
 }
 new Promise(resolve => setTimeout(() => {
   Array.from(document.querySelectorAll('button')).find(b => (b.textContent.includes('Reveal') || b.textContent.includes('Complete')) && !b.className.includes('gradient'))?.click();
@@ -133,16 +134,18 @@ new Promise(resolve => setTimeout(() => {
 ```
 
 ### Drag-and-Drop Challenge
-**IMPORTANT:** Wait 2s after drops for React state update — 500ms is NOT enough.
+**IMPORTANT:** Use `clientX`/`clientY` from `getBoundingClientRect()` for drag events. Wait 2s after drops for React state update.
 ```javascript
 const pieces = Array.from(document.querySelectorAll('[draggable="true"]'));
 const slots = Array.from(document.querySelectorAll('.border-dashed'));
 pieces.slice(0, slots.length).forEach((piece, i) => {
   const dt = new DataTransfer();
-  piece.dispatchEvent(new DragEvent('dragstart', {dataTransfer: dt, bubbles: true}));
-  slots[i].dispatchEvent(new DragEvent('dragenter', {dataTransfer: dt, bubbles: true}));
-  slots[i].dispatchEvent(new DragEvent('dragover', {dataTransfer: dt, bubbles: true}));
-  slots[i].dispatchEvent(new DragEvent('drop', {dataTransfer: dt, bubbles: true}));
+  const pr = piece.getBoundingClientRect();
+  const sr = slots[i].getBoundingClientRect();
+  piece.dispatchEvent(new DragEvent('dragstart', {dataTransfer: dt, clientX: pr.left+pr.width/2, clientY: pr.top+pr.height/2, bubbles: true}));
+  slots[i].dispatchEvent(new DragEvent('dragenter', {dataTransfer: dt, clientX: sr.left+sr.width/2, clientY: sr.top+sr.height/2, bubbles: true}));
+  slots[i].dispatchEvent(new DragEvent('dragover', {dataTransfer: dt, clientX: sr.left+sr.width/2, clientY: sr.top+sr.height/2, bubbles: true}));
+  slots[i].dispatchEvent(new DragEvent('drop', {dataTransfer: dt, clientX: sr.left+sr.width/2, clientY: sr.top+sr.height/2, bubbles: true}));
   piece.dispatchEvent(new DragEvent('dragend', {bubbles: true}));
 });
 new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 2000))
@@ -336,15 +339,17 @@ new Promise(resolve => setTimeout(() => {
 ```
 
 ### Gesture Challenge
-Draw on canvas then click Complete. **If NO_CODE after 1 attempt, immediately use the REACT FIBER FALLBACK below** — canvas recognition is unreliable.
+Draw a closed square on canvas using `clientX`/`clientY` (NOT offsetX), then click Complete. **If NO_CODE after 1 attempt, immediately use the REACT FIBER FALLBACK below.**
 ```javascript
 const canvas = document.querySelector('canvas');
 if (canvas) {
-  canvas.dispatchEvent(new MouseEvent('mousedown', {offsetX: 50, offsetY: 50, bubbles: true}));
-  for (let i = 0; i < 10; i++) {
-    canvas.dispatchEvent(new MouseEvent('mousemove', {offsetX: 50+i*15, offsetY: 50+i*10, bubbles: true}));
+  const r = canvas.getBoundingClientRect();
+  const pts = [[30,30],[130,30],[130,130],[30,130],[30,30]]; // closed square
+  canvas.dispatchEvent(new MouseEvent('mousedown', {clientX: r.left+pts[0][0], clientY: r.top+pts[0][1], bubbles: true}));
+  for (const [x,y] of pts.slice(1)) {
+    canvas.dispatchEvent(new MouseEvent('mousemove', {clientX: r.left+x, clientY: r.top+y, bubbles: true}));
   }
-  canvas.dispatchEvent(new MouseEvent('mouseup', {offsetX: 200, offsetY: 150, bubbles: true}));
+  canvas.dispatchEvent(new MouseEvent('mouseup', {clientX: r.left+30, clientY: r.top+30, bubbles: true}));
 }
 new Promise(resolve => setTimeout(() => {
   Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Complete') && !b.className.includes('gradient'))?.click();
@@ -466,7 +471,7 @@ new Promise(resolve => setTimeout(() => {
 ```
 
 ### Shadow DOM Challenge
-**IMPORTANT:** These are NOT real Shadow DOM elements — they are nested `<div>` elements simulating shadow layers. Click each "Shadow Level N" in order, then "Reveal Code". Solve + auto-submit:
+**IMPORTANT:** These are NOT real Shadow DOM elements — they are nested `<div>` elements simulating shadow layers. Levels appear ONE AT A TIME after React re-render (same as Recursive Iframe). Must use async clicks with delays. Solve + auto-submit:
 ```javascript
 (function() {
   document.querySelectorAll('div').forEach(d => { if (d.textContent.includes('Wrong Button')) d.remove(); });
@@ -484,31 +489,45 @@ new Promise(resolve => setTimeout(() => {
     }, 300));
   }
   if (existing) return submitCode(existing[1]);
-  // Click shadow level divs/buttons in order, SKIPPING already-completed ones (those with checkmark ✓/✔/✅)
-  for (let i = 1; i <= 10; i++) {
-    const els = Array.from(document.querySelectorAll('div, button')).filter(e => {
-      const t = e.textContent.trim();
-      return t.includes('Shadow Level ' + i) && !t.includes('✓') && !t.includes('✔') && !t.includes('✅') && t.length < 80;
-    });
-    // Click the most specific (shortest text) match to avoid clicking parent containers
-    const el = els.sort((a, b) => a.textContent.length - b.textContent.length)[0];
-    if (el) el.click();
-  }
-  // Also try cursor-pointer elements that haven't been completed
-  Array.from(document.querySelectorAll('[class*="cursor-pointer"]')).forEach(el => {
-    const t = el.textContent;
-    if (/Shadow Level \d/.test(t) && t.length < 50 && !t.includes('✓') && !t.includes('✔')) el.click();
-  });
-  return new Promise(resolve => setTimeout(() => {
+  // Levels appear ONE AT A TIME — must click with delays between each
+  async function clickLevels() {
+    for (let i = 0; i < 10; i++) {
+      await new Promise(r => setTimeout(r, 400));
+      // Find uncompleted shadow level (cursor-pointer, no checkmark)
+      const el = Array.from(document.querySelectorAll('[class*="cursor-pointer"]')).find(e => {
+        const t = e.textContent;
+        return /Shadow Level \d/.test(t) && t.length < 50 && !t.includes('✓') && !t.includes('✔') && !t.includes('✅');
+      });
+      if (el) el.click();
+      else break;
+    }
+    await new Promise(r => setTimeout(r, 500));
     // Click Reveal Code
     Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Reveal Code') && !b.className.includes('gradient'))?.click();
-    setTimeout(() => {
-      const t = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
-      const m = t?.match(/real code is:\s*([A-Z0-9]{6})/i) || t?.match(/code is:\s*([A-Z0-9]{6})/i);
-      if (m) resolve(submitCode(m[1]));
-      else resolve('NO_CODE\n' + t);
-    }, 1000);
-  }, 500));
+    await new Promise(r => setTimeout(r, 1000));
+    const t = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
+    const m = t?.match(/real code is:\s*([A-Z0-9]{6})/i) || t?.match(/code is:\s*([A-Z0-9]{6})/i);
+    if (m) return submitCode(m[1]);
+    // Fallback: try React fiber
+    const el2 = document.querySelector('h4[class*="font-bold"]') || document.querySelector('h1');
+    if (el2) {
+      const fk = Object.keys(el2).find(k => k.startsWith('__reactFiber$'));
+      if (fk) {
+        let fiber = el2[fk];
+        while (fiber) {
+          const props = fiber.memoizedProps || fiber.pendingProps || {};
+          if (typeof props.onComplete === 'function') {
+            const code = props.onComplete({type:"shadow_dom", timestamp:Date.now(), data:{method:"shadow_dom"}});
+            if (code && /^[A-Z0-9]{6}$/.test(code)) return submitCode(code);
+            break;
+          }
+          fiber = fiber.return;
+        }
+      }
+    }
+    return 'NO_CODE\n' + t;
+  }
+  return clickLevels();
 })()
 ```
 

@@ -38,13 +38,12 @@ BROWSER_DATA_DIR = PROJECT_DIR / ".browser-data"
 
 SUBPROCESS_TIMEOUT = 3600  # 60 minutes
 MAX_STEPS = 30
-STEP_INCREMENT = 2
+STEP_INCREMENT = 3
 
 # Model curriculum: each model runs through the full step curriculum (2→30),
 # then we move to the next model and reset step target.
 MODEL_CURRICULUM = [
     "anthropic/claude-opus-4.6",
-    "anthropic/claude-haiku-4.5",
     "openai/gpt-oss-120b",
 ]
 
@@ -52,7 +51,7 @@ MODEL_CURRICULUM = [
 # ---- turn budget ----
 
 def compute_turn_budget(step_target: int) -> int:
-    """Scale turn budget: 30 at target=2, 300 at target=30, diminishing increases.
+    """Scale turn budget: 30 at target=2, 150 at target=30, diminishing increases.
 
     Uses power curve (exponent 0.85) so early levels get proportionally
     more turns per new step than later levels.
@@ -60,7 +59,7 @@ def compute_turn_budget(step_target: int) -> int:
     if step_target <= 2:
         return 30
     ratio = (step_target - 2) / (MAX_STEPS - 2)  # 0..1
-    return int(30 + 270 * ratio ** 0.85)
+    return int(30 + 120 * ratio ** 0.85)
 
 
 # ---- prompt backup ----

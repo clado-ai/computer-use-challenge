@@ -81,6 +81,23 @@ export async function runAgent(): Promise<AgentResult> {
   const metrics = new MetricsTracker();
   const transcript: Array<{ role: string; content: unknown }> = [];
 
+  // Persistent output path — write trajectory after every step
+  const runsDir = path.join(import.meta.dir, "..", "runs");
+  fs.mkdirSync(runsDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const trajectoryPath = path.join(runsDir, `trajectory_${timestamp}.json`);
+
+  function saveTrajectory() {
+    const data = {
+      stepsCompleted,
+      turnCount,
+      timestamp: new Date().toISOString(),
+      transcript,
+    };
+    fs.writeFileSync(trajectoryPath, JSON.stringify(data, null, 2));
+    console.log(`[trajectory] saved (${stepsCompleted} steps, ${turnCount} turns) → ${path.basename(trajectoryPath)}`);
+  }
+
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "system", content: SYSTEM_PROMPT },
     {
@@ -264,6 +281,7 @@ export async function runAgent(): Promise<AgentResult> {
     // clear context on step transition, but keep last tool result so agent knows the new step
     if (stepsCompleted > prevStepsCompleted) {
       console.log(`[context] step ${prevStepsCompleted} → ${stepsCompleted}, clearing context`);
+      saveTrajectory();
       turnsOnSameStep = 0;
       const nextStep = stepsCompleted + 1;
       // grab the last tool result to carry forward
@@ -296,6 +314,7 @@ export async function runAgent(): Promise<AgentResult> {
 
       if (stepsCompleted > prevStepsCompleted) {
         console.log(`[bypass] >> success! completed step ${prevStepsCompleted + 1}, now on step ${stepsCompleted + 1}`);
+        saveTrajectory();
         turnsOnSameStep = 0;
         prevStepsCompleted = stepsCompleted;
         const nextStep = stepsCompleted + 1;
@@ -332,6 +351,7 @@ export async function runAgent(): Promise<AgentResult> {
     console.log(`\n[agent] reached turn limit (${MAX_TURNS}), stopping.`);
   }
 
+  saveTrajectory();
   metrics.endAgent();
   const report = metrics.getReport(CHALLENGE_URL, MODEL, stepsCompleted);
   return { stepsCompleted, metrics: report, transcript };

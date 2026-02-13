@@ -1,84 +1,49 @@
-import { chromium, type Browser, type Page, type ElementHandle } from "playwright";
+import {
+  chromium,
+  type BrowserContext,
+  type Page,
+  type ElementHandle,
+} from "playwright";
 import type Anthropic from "@anthropic-ai/sdk";
 import * as path from "node:path";
+import * as fs from "node:fs";
 
-// ---- dev-browser client (inline to avoid import path issues) ----
+// ---- browser management (direct launch, no server needed) ----
 
-interface PageInfo {
-  wsEndpoint: string;
-  name: string;
-  targetId: string;
-}
-
-let browser: Browser | null = null;
+let context: BrowserContext | null = null;
 let currentPage: Page | null = null;
-const serverUrl = "http://localhost:9222";
 
-async function resetConnection() {
-  if (browser) {
-    try { await browser.close(); } catch { /* */ }
-  }
-  browser = null;
-  currentPage = null;
-}
+const PROFILE_DIR = path.resolve(import.meta.dir, "..", ".browser-data");
 
-async function ensureBrowser(): Promise<Browser> {
-  if (browser && browser.isConnected()) return browser;
-
-  // force clean slate
-  await resetConnection();
-
-  const res = await fetch(serverUrl);
-  if (!res.ok) throw new Error(`dev-browser server not responding: ${res.status}`);
-  const info = (await res.json()) as { wsEndpoint: string };
-
-  try {
-    browser = await chromium.connectOverCDP(info.wsEndpoint);
-  } catch (err) {
-    // if CDP connection fails, the server may need a restart
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `cannot connect to dev-browser CDP at ${info.wsEndpoint}: ${msg}\n` +
-      `try restarting the dev-browser server: bun run start-server`
-    );
-  }
-  return browser;
-}
-
-async function getOrCreatePage(name: string): Promise<Page> {
+async function ensurePage(): Promise<Page> {
   if (currentPage && !currentPage.isClosed()) return currentPage;
 
-  const res = await fetch(`${serverUrl}/pages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, viewport: { width: 1280, height: 720 } }),
-  });
-  const pageInfo = (await res.json()) as PageInfo;
-  const b = await ensureBrowser();
-
-  // find page by targetId
-  for (const ctx of b.contexts()) {
-    for (const p of ctx.pages()) {
-      let session;
-      try {
-        session = await ctx.newCDPSession(p);
-        const resp = (await session.send("Target.getTargetInfo")) as any;
-        if (resp.targetInfo.targetId === pageInfo.targetId) {
-          currentPage = p;
-          return p;
-        }
-      } catch {
-        // ignore
-      } finally {
-        try {
-          await session?.detach();
-        } catch {
-          /* */
-        }
-      }
-    }
+  if (!context) {
+    fs.mkdirSync(PROFILE_DIR, { recursive: true });
+    console.log("[browser] launching chromium...");
+    const headless = process.env.HEADLESS !== "false";
+    context = await chromium.launchPersistentContext(PROFILE_DIR, {
+      headless,
+      viewport: { width: 1280, height: 720 },
+      args: ["--disable-blink-features=AutomationControlled"],
+    });
+    console.log("[browser] ready");
   }
-  throw new Error(`page "${name}" not found in browser`);
+
+  // use existing page or create new one
+  const pages = context.pages();
+  currentPage = pages[0] ?? (await context.newPage());
+
+  // set up dialog auto-dismiss
+  currentPage.on("dialog", async (dialog) => {
+    try {
+      await dialog.dismiss();
+    } catch {
+      /* */
+    }
+  });
+
+  return currentPage;
 }
 
 // load snapshot script from dev-browser
@@ -94,9 +59,6 @@ async function getSnapshotScript(): Promise<string> {
   snapshotScriptCache = mod.getSnapshotScript() as string;
   return snapshotScriptCache;
 }
-
-// ---- page name for this session ----
-const PAGE_NAME = "challenge";
 
 // ---- tool definitions ----
 
@@ -172,56 +134,31 @@ export async function executeTool(
   name: string,
   input: Record<string, unknown>,
 ): Promise<string> {
-  const maxRetries = 2;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      switch (name) {
-        case "browser_navigate":
-          return await toolNavigate(input.url as string);
-        case "browser_snapshot":
-          return await toolSnapshot();
-        case "browser_action":
-          return await toolAction(
-            input.action as string,
-            input.ref as string | undefined,
-            input.value as string | undefined,
-          );
-        case "browser_evaluate":
-          return await toolEvaluate(input.script as string);
-        default:
-          return `unknown tool: ${name}`;
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const isConnectionError =
-        msg.includes("WebSocket error") ||
-        msg.includes("Target closed") ||
-        msg.includes("Session closed") ||
-        msg.includes("not found in browser") ||
-        msg.includes("Cannot connect");
-
-      if (isConnectionError && attempt < maxRetries) {
-        console.log(`  [retry] connection error, reconnecting (attempt ${attempt + 1})...`);
-        await resetConnection();
-        continue;
-      }
-      return `error: ${msg}`;
+  try {
+    switch (name) {
+      case "browser_navigate":
+        return await toolNavigate(input.url as string);
+      case "browser_snapshot":
+        return await toolSnapshot();
+      case "browser_action":
+        return await toolAction(
+          input.action as string,
+          input.ref as string | undefined,
+          input.value as string | undefined,
+        );
+      case "browser_evaluate":
+        return await toolEvaluate(input.script as string);
+      default:
+        return `unknown tool: ${name}`;
     }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return `error: ${msg}`;
   }
-  return "error: max retries exceeded";
 }
 
 async function toolNavigate(url: string): Promise<string> {
-  const page = await getOrCreatePage(PAGE_NAME);
-
-  // auto-dismiss dialogs
-  page.on("dialog", async (dialog) => {
-    try {
-      await dialog.dismiss();
-    } catch {
-      /* */
-    }
-  });
+  const page = await ensurePage();
 
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
 
@@ -242,7 +179,7 @@ async function toolNavigate(url: string): Promise<string> {
 }
 
 async function toolSnapshot(): Promise<string> {
-  const page = await getOrCreatePage(PAGE_NAME);
+  const page = await ensurePage();
 
   const script = await getSnapshotScript();
   const snapshot = await page.evaluate((s: string) => {
@@ -261,7 +198,7 @@ async function toolAction(
   ref?: string,
   value?: string,
 ): Promise<string> {
-  const page = await getOrCreatePage(PAGE_NAME);
+  const page = await ensurePage();
 
   if (action === "press") {
     await page.keyboard.press(value || "Enter");
@@ -302,7 +239,7 @@ async function toolAction(
 }
 
 async function toolEvaluate(script: string): Promise<string> {
-  const page = await getOrCreatePage(PAGE_NAME);
+  const page = await ensurePage();
   try {
     const result = await page.evaluate(script);
     if (result === undefined || result === null) return "null";
@@ -333,13 +270,13 @@ async function resolveRef(
 
 // cleanup
 export async function cleanup() {
-  if (browser) {
+  if (context) {
     try {
-      await browser.close();
+      await context.close();
     } catch {
       /* */
     }
-    browser = null;
+    context = null;
   }
   currentPage = null;
 }

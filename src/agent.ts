@@ -7,7 +7,6 @@ import * as path from "node:path";
 const MODEL = "claude-opus-4-6";
 const MAX_TOKENS = 8192;
 const CHALLENGE_URL = "https://serene-frangipane-7fd25b.netlify.app";
-const MAX_STEPS = parseInt(process.env.MAX_STEPS || "30", 10);
 const MAX_TURNS = parseInt(process.env.MAX_TURNS || "150", 10);
 
 // load system prompt
@@ -36,7 +35,7 @@ export async function runAgent(): Promise<AgentResult> {
   let turnCount = 0;
 
   metrics.startAgent();
-  console.log(`starting agent with ${MODEL} (target: step ${MAX_STEPS}, max turns: ${MAX_TURNS})...`);
+  console.log(`starting agent with ${MODEL} (max turns: ${MAX_TURNS})...`);
   console.log(`challenge: ${CHALLENGE_URL}\n`);
 
   while (turnCount < MAX_TURNS) {
@@ -71,15 +70,10 @@ export async function runAgent(): Promise<AgentResult> {
           const stepNum = parseInt(stepMatch[1]!, 10);
           if (stepNum > stepsCompleted && stepNum <= 30) {
             stepsCompleted = stepNum;
-            console.log(`  >> step ${stepsCompleted}/${MAX_STEPS} detected`);
+            console.log(`  >> step ${stepsCompleted}/30 detected`);
           }
         }
       }
-    }
-
-    if (stepsCompleted >= MAX_STEPS) {
-      console.log(`\n[agent] reached target step ${MAX_STEPS}, stopping.`);
-      break;
     }
 
     // save to transcript
@@ -140,11 +134,6 @@ export async function runAgent(): Promise<AgentResult> {
     messages.push({ role: "assistant", content: response.content });
     messages.push({ role: "user", content: toolResults });
     transcript.push({ role: "user", content: toolResults });
-
-    if (stepsCompleted >= MAX_STEPS) {
-      console.log(`\n[agent] reached target step ${MAX_STEPS}, stopping.`);
-      break;
-    }
 
     // context management: if messages are getting long, trim old tool results
     if (messages.length > 60) {

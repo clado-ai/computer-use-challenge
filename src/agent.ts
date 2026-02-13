@@ -35,12 +35,16 @@ export async function runAgent(): Promise<AgentResult> {
   let stepsCompleted = 0;
   let prevStepsCompleted = 0;
   let turnCount = 0;
+  let interrupted = false;
+
+  const onSigint = () => { interrupted = true; console.log("\n[agent] interrupted, saving..."); };
+  process.on("SIGINT", onSigint);
 
   metrics.startAgent();
   console.log(`starting agent with ${MODEL} (max turns: ${MAX_TURNS}, target steps: ${MAX_STEPS})...`);
   console.log(`challenge: ${CHALLENGE_URL}\n`);
 
-  while (turnCount < MAX_TURNS) {
+  while (turnCount < MAX_TURNS && !interrupted) {
     turnCount++;
 
     const response = await client.messages.create({
@@ -160,6 +164,8 @@ export async function runAgent(): Promise<AgentResult> {
       prevStepsCompleted = stepsCompleted;
     }
   }
+
+  process.removeListener("SIGINT", onSigint);
 
   if (turnCount >= MAX_TURNS) {
     console.log(`\n[agent] reached turn limit (${MAX_TURNS}), stopping.`);

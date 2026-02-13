@@ -51,14 +51,41 @@ export async function runAgent(): Promise<AgentResult> {
   while (turnCount < MAX_TURNS && !interrupted) {
     turnCount++;
 
-    const response = await client.chat.completions.create({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      tools: toolDefinitions,
-      messages,
-      // @ts-expect-error OpenRouter-specific: pin to Groq provider
-      provider: { order: ["Groq"], allow_fallbacks: false },
-    });
+    let response: OpenAI.Chat.Completions.ChatCompletion;
+    try {
+      response = await client.chat.completions.create({
+        model: MODEL,
+        max_tokens: MAX_TOKENS,
+        tools: toolDefinitions,
+        messages,
+        // @ts-expect-error OpenRouter-specific: pin to Groq provider
+        provider: { order: ["Groq"], allow_fallbacks: false },
+      });
+    } catch (err) {
+      const apiErr = err as { status?: number; error?: unknown; message?: string };
+      console.error(`[api error] status=${apiErr.status} message=${apiErr.message}`);
+      console.error(`[api error] details:`, JSON.stringify(apiErr.error, null, 2));
+      // retry once after 2s
+      if (apiErr.status === 400 || apiErr.status === 502 || apiErr.status === 503) {
+        console.log("[api] retrying in 2s...");
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          response = await client.chat.completions.create({
+            model: MODEL,
+            max_tokens: MAX_TOKENS,
+            tools: toolDefinitions,
+            messages,
+            // @ts-expect-error OpenRouter-specific: pin to Groq provider
+            provider: { order: ["Groq"], allow_fallbacks: false },
+          });
+        } catch (retryErr) {
+          console.error("[api] retry also failed, stopping");
+          break;
+        }
+      } else {
+        throw err;
+      }
+    }
 
     const choice = response.choices[0];
     if (!choice) {
@@ -102,7 +129,9 @@ export async function runAgent(): Promise<AgentResult> {
     }
 
     // append assistant message (with tool_calls) to conversation
-    messages.push(message);
+    // strip `refusal` — Groq rejects it as unsupported
+    const { refusal, ...cleanMessage } = message as typeof message & { refusal?: unknown };
+    messages.push(cleanMessage);
 
     // execute tool calls
     for (const toolCall of toolCalls) {

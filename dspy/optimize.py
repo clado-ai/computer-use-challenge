@@ -292,6 +292,10 @@ def make_metric(judge_lm: dspy.LM, rollout: str) -> Callable:
 
         judge_prompt = f"""You are evaluating a system prompt for a browser automation agent.
 
+IMPORTANT: Do NOT reference specific step numbers, codes, passwords, or answers from the rollout.
+Your suggestions must be GENERALIZABLE strategies that help with ANY step, not solutions to specific steps.
+Focus on: tool usage patterns, error recovery strategies, efficiency improvements, DOM inspection techniques.
+
 ACTUAL ROLLOUT (what happened when the agent ran):
 ---
 {rollout[:3000]}
@@ -303,7 +307,7 @@ PROPOSED SYSTEM PROMPT (what the agent would be told next time):
 ---
 
 Analyze:
-1. WHAT WENT WRONG in the rollout? List the top 3-5 failures.
+1. WHAT WENT WRONG in the rollout? List the top 3-5 failures (describe patterns, not specific step solutions).
 2. WHAT WENT RIGHT? List the top 3 successes.
 3. Does the proposed prompt DIRECTLY ADDRESS each failure? For each failure, say YES/NO and why.
 4. Does the prompt introduce any BAD ADVICE that could cause new failures?
@@ -419,6 +423,197 @@ def save_optimized_prompt(program: Any, output_dir: Path) -> Optional[Path]:
     prompt_path.write_text(instructions, encoding="utf-8")
     print(f"saved optimized prompt to: {prompt_path}")
     return prompt_path
+
+
+# ---- programmatic API for train_loop ----
+
+def analyze_trajectories(
+    transcript_files: list[str | Path],
+    metric_files: list[str | Path],
+) -> str:
+    """Build rollout analysis from explicit file paths (not scanning runs/).
+
+    Like analyze_rollout() but takes specific files, useful for the training
+    loop's sliding window of recent trajectories.
+    """
+    transcripts = []
+    for f in transcript_files:
+        try:
+            data = json.loads(Path(f).read_text())
+            transcripts.append({"file": Path(f).name, "data": data})
+        except Exception:
+            continue
+
+    metrics = []
+    for f in metric_files:
+        try:
+            data = json.loads(Path(f).read_text())
+            metrics.append(data)
+        except Exception:
+            continue
+
+    if not metrics and not transcripts:
+        return _synthetic_rollout()
+
+    parts = []
+
+    # overall stats
+    for m in metrics:
+        parts.append(
+            f"RUN: {m.get('stepsCompleted', '?')}/30 steps, "
+            f"{m.get('agentDurationMs', 0) / 1000:.1f}s, "
+            f"{m.get('totalApiCalls', '?')} api calls, "
+            f"{m.get('totalToolCalls', '?')} tool calls, "
+            f"${m.get('totalCost', '?')}"
+        )
+
+    # per-step breakdown from ALL provided transcripts (not just 2)
+    for t in transcripts:
+        steps = extract_rollout_steps(t.get("data", []))
+        parts.append(f"\n--- rollout from {t['file']} ({len(steps)} turns) ---")
+
+        for i, step in enumerate(steps):
+            errors = [r for r in step["tool_results"] if "error" in r.lower()]
+            successes = [r for r in step["tool_results"] if "error" not in r.lower()]
+            tool_names = [c["tool"] for c in step["tool_calls"]]
+            agent_reasoning = " ".join(step["agent_text"])[:200]
+
+            status = "FAIL" if errors else "OK"
+            turn_summary = f"turn {i + 1} [{status}]: tools={tool_names}"
+
+            if agent_reasoning.strip():
+                turn_summary += f" | reasoning: {agent_reasoning[:100]}"
+            if errors:
+                turn_summary += f" | errors: {'; '.join(e[:100] for e in errors[:2])}"
+            if successes:
+                turn_summary += f" | results: {'; '.join(s[:80] for s in successes[:2])}"
+
+            parts.append(turn_summary)
+
+    # identify patterns across all transcripts
+    all_steps = []
+    for t in transcripts:
+        all_steps.extend(extract_rollout_steps(t.get("data", [])))
+
+    if all_steps:
+        wasted = []
+        for step in all_steps:
+            errors = [r for r in step["tool_results"] if "error" in r.lower()]
+            if len(errors) > 1:
+                wasted.append(
+                    f"  - {len(errors)} errors in one turn: "
+                    f"{[c['tool'] for c in step['tool_calls']]}"
+                )
+        if wasted:
+            parts.append("\nWASTED CALLS (multiple errors per turn):")
+            parts.extend(wasted[:5])
+
+        tool_counts: dict[str, int] = {}
+        error_counts: dict[str, int] = {}
+        for step in all_steps:
+            for call in step["tool_calls"]:
+                tool_counts[call["tool"]] = tool_counts.get(call["tool"], 0) + 1
+            for r in step["tool_results"]:
+                if "error" in r.lower():
+                    if step["tool_calls"]:
+                        t_name = step["tool_calls"][0]["tool"]
+                        error_counts[t_name] = error_counts.get(t_name, 0) + 1
+
+        parts.append("\nTOOL USAGE:")
+        for tool, count in sorted(tool_counts.items(), key=lambda x: -x[1]):
+            err = error_counts.get(tool, 0)
+            parts.append(f"  {tool}: {count} calls, {err} errors")
+
+    return "\n".join(parts)
+
+
+def run_optimization(
+    transcript_files: list[str | Path],
+    metric_files: list[str | Path],
+    generator_model: str = "anthropic/claude-opus-4.5",
+    judge_model: str = "anthropic/claude-opus-4.5",
+) -> dict:
+    """Programmatic entry point for GEPA optimization.
+
+    Returns dict with:
+        optimized_prompt: str
+        judge_feedback: list[dict]  - raw judge evaluations
+        rollout_analysis: str       - the analysis text fed to GEPA
+    """
+    try:
+        import dotenv
+        dotenv.load_dotenv(SCRIPT_DIR.parent / ".env")
+    except Exception:
+        pass
+
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    if not openrouter_key:
+        raise ValueError("OPENROUTER_API_KEY required in env or .env")
+
+    # build rollout analysis from provided files
+    rollout = analyze_trajectories(transcript_files, metric_files)
+
+    # configure dspy
+    dspy.configure(lm=build_lm(openrouter_key, generator_model))
+
+    judge_lm = dspy.LM(
+        model=f"openrouter/{judge_model}",
+        api_key=openrouter_key,
+        temperature=0.2,
+    )
+    reflection_lm = dspy.LM(
+        model=f"openrouter/{generator_model}",
+        api_key=openrouter_key,
+        temperature=1.0,
+        max_tokens=4096,
+    )
+
+    program = PromptGenerator()
+    metric = make_metric(judge_lm, rollout)
+
+    trainset = build_trainset(rollout)
+
+    optimizer = dspy.GEPA(
+        metric=metric,
+        auto="light",
+        track_stats=True,
+        reflection_minibatch_size=3,
+        reflection_lm=reflection_lm,
+    )
+    compiled = optimizer.compile(program, trainset=trainset)
+
+    # extract optimized prompt
+    optimized_prompt = extract_instructions(compiled)
+    if not optimized_prompt:
+        # fallback: run the compiled program to get output
+        prediction = compiled(rollout_analysis=rollout)
+        optimized_prompt = prediction.optimized_prompt
+
+    # collect judge feedback from optimizer stats
+    judge_feedback = []
+    if hasattr(optimizer, "stats"):
+        stats = optimizer.stats
+        if isinstance(stats, dict):
+            judge_feedback = stats.get("evaluations", [])
+        elif isinstance(stats, list):
+            judge_feedback = stats
+
+    # if no stats available, run one evaluation to get feedback
+    if not judge_feedback:
+        eval_result = metric(
+            dspy.Example(rollout_analysis=rollout).with_inputs("rollout_analysis"),
+            dspy.Prediction(optimized_prompt=optimized_prompt),
+        )
+        judge_feedback = [{
+            "score": eval_result.score,
+            "feedback": eval_result.feedback,
+        }]
+
+    return {
+        "optimized_prompt": optimized_prompt,
+        "judge_feedback": judge_feedback,
+        "rollout_analysis": rollout,
+    }
 
 
 # ---- main ----

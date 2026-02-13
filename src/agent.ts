@@ -4,7 +4,7 @@ import { MetricsTracker } from "./metrics.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const MODEL = "openai/gpt-oss-120b";
+const MODEL = "anthropic/claude-opus-4.6";
 const MAX_TOKENS = 8192;
 const CHALLENGE_URL = "https://serene-frangipane-7fd25b.netlify.app";
 const MAX_TURNS = parseInt(process.env.MAX_TURNS || "1000", 10);
@@ -130,8 +130,8 @@ export async function runAgent(): Promise<AgentResult> {
           max_tokens: MAX_TOKENS,
           tools: toolDefinitions,
           messages,
-          // @ts-expect-error OpenRouter-specific: pin to Groq provider
-          provider: { order: ["Groq"], allow_fallbacks: false },
+          // @ts-expect-error OpenRouter-specific: pin to Anthropic provider
+          provider: { order: ["Anthropic"], allow_fallbacks: false },
         });
         break;
       } catch (err) {

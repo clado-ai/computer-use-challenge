@@ -6,25 +6,21 @@ import * as path from "node:path";
 async function main() {
   console.log("=== Computer Use Challenge Agent ===\n");
 
-  // ensure runs directory exists
   const runsDir = path.join(import.meta.dir, "..", "runs");
   fs.mkdirSync(runsDir, { recursive: true });
 
   try {
     const result = await runAgent();
 
-    // save metrics
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const metricsPath = path.join(runsDir, `run_${timestamp}.json`);
     fs.writeFileSync(metricsPath, JSON.stringify(result.metrics, null, 2));
     console.log(`\nmetrics saved to: ${metricsPath}`);
 
-    // save transcript
     const transcriptPath = path.join(runsDir, `transcript_${timestamp}.json`);
     fs.writeFileSync(transcriptPath, JSON.stringify(result.transcript, null, 2));
     console.log(`transcript saved to: ${transcriptPath}`);
 
-    // print summary
     const m = result.metrics;
     console.log("\n=== Run Summary ===");
     console.log(`steps completed: ${m.stepsCompleted}/${m.totalSteps}`);

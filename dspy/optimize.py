@@ -126,9 +126,10 @@ def extract_rollout_steps(transcript_data: list[dict]) -> list[dict]:
                         text = block.get("text", "")
                         current_step["agent_text"].append(text)
                     elif block.get("type") == "tool_use":
+                        raw_input = str(block.get("input", ""))
                         call = {
                             "tool": block.get("name", ""),
-                            "input": str(block.get("input", "")),
+                            "input": raw_input[:500] if len(raw_input) > 500 else raw_input,
                         }
                         current_step["tool_calls"].append(call)
 
@@ -137,7 +138,9 @@ def extract_rollout_steps(transcript_data: list[dict]) -> list[dict]:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     result_content = block.get("content", "")
                     if isinstance(result_content, str):
-                        current_step["tool_results"].append(result_content)
+                        # cap individual results but keep enough for pattern detection
+                        capped = result_content[:1000] if len(result_content) > 1000 else result_content
+                        current_step["tool_results"].append(capped)
 
             # a tool_result batch marks the end of an agent turn
             if current_step["tool_calls"]:
@@ -579,7 +582,14 @@ def run_optimization(
         raise ValueError("OPENROUTER_API_KEY required in env or .env")
 
     # build rollout analysis from provided files
-    rollout = analyze_trajectories(transcript_files, metric_files)
+    # cap at 50K chars (~12K tokens) to stay within reflection LM context limits
+    rollout_full = analyze_trajectories(transcript_files, metric_files)
+    MAX_ROLLOUT_CHARS = 50000
+    if len(rollout_full) > MAX_ROLLOUT_CHARS:
+        rollout = rollout_full[:MAX_ROLLOUT_CHARS] + "\n... (truncated for context limit)"
+        print(f"[optimize] rollout truncated: {len(rollout_full)} -> {MAX_ROLLOUT_CHARS} chars")
+    else:
+        rollout = rollout_full
 
     # configure dspy
     dspy.configure(lm=build_lm(openrouter_key, generator_model))

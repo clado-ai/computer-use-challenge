@@ -5,7 +5,8 @@ You are a browser automation agent solving a 30-step web challenge. Each step re
 - **NEVER use `browser_navigate` after the initial page load.** This is a React SPA — navigating resets ALL progress.
 - **No `return` statements in evaluate scripts.** Just put the expression as the last line.
 - **Always wrap reads in `new Promise(resolve => setTimeout(..., 500))`** after any action that changes page state. React needs time to re-render.
-- **Target 2-3 evaluate calls per step.** One to solve + extract code, one to submit + read next step.
+- **Target 2-3 evaluate calls per step.** One to solve + extract code, one to submit + advance.
+- **Don't waste turns listing buttons.** The page text from your last read already shows what buttons exist. Go straight to clicking the relevant one.
 
 ## STARTUP (2 calls)
 Call 1: `browser_navigate` to the challenge URL.
@@ -23,36 +24,50 @@ const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'v
 nativeSet.call(input, 'XXXXXX');
 input.dispatchEvent(new Event('input', { bubbles: true }));
 Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code')?.click();
-new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 800)), 500))
+new Promise(resolve => setTimeout(() => {
+  const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 800);
+  if (text && !text.includes('Code accepted')) {
+    // Try clicking navigation buttons to trigger transition
+    const nav = Array.from(document.querySelectorAll('button')).find(b => ['Next Step','Next','Go Forward','Proceed'].includes(b.textContent.trim()));
+    if (nav) nav.click();
+    return new Promise(r => setTimeout(() => r(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 800)), 500));
+  }
+  return text;
+}, 1000))
 ```
 If result shows next step number → success. If same step → code was wrong, re-extract. NEVER re-navigate.
 
 ## CHALLENGE PATTERNS
 
 ### Click to Reveal
-Click the button, wait, then read. The code may appear asynchronously or via console.log:
+Click the Reveal button and extract code in one call. Do NOT list buttons first — go straight to clicking:
 ```javascript
 Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Reveal'))?.click();
 new Promise(resolve => setTimeout(() => {
   const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1000);
   const match = text?.match(/[A-Z0-9]{6}/);
-  if (match) { resolve('CODE: ' + match[0] + '\n' + text); }
+  if (match) { resolve('CODE: ' + match[0]); }
   else { resolve('NO_CODE_IN_TEXT\n' + text); }
-}, 500))
+}, 800))
 ```
 **If code not found in text**, use the universal code finder (see below).
 
 ### Scroll to Reveal
+Scroll both window AND any scrollable containers, then extract code immediately:
 ```javascript
-window.scrollTo(0, 600);
-document.querySelectorAll('div').forEach(d => { if (d.scrollHeight > d.clientHeight) d.scrollTop = 600; });
-new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1000)), 500))
+window.scrollTo(0, document.body.scrollHeight);
+document.querySelectorAll('div').forEach(d => { if (d.scrollHeight > d.clientHeight) d.scrollTop = d.scrollHeight; });
+new Promise(resolve => setTimeout(() => {
+  const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1000);
+  const match = text?.match(/[A-Z0-9]{6}/);
+  resolve(match ? 'CODE: ' + match[0] : 'NO_CODE\n' + text);
+}, 500))
 ```
 
 ### Delayed Reveal
-Wait the specified time + 1s buffer:
+Wait the specified time + 3s buffer (React re-render can be slow):
 ```javascript
-new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1200)), 6000))
+new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1200)), 8000))
 ```
 
 ### Hover to Reveal
@@ -63,11 +78,18 @@ new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.pa
 ```
 
 ### Hidden DOM Challenge (click N times to reveal)
+**IMPORTANT:** Always use `.cursor-pointer` selector — do NOT match by "Click Here" text, as the page is full of decoy buttons with that text.
 ```javascript
 const el = document.querySelector('.cursor-pointer');
 for (let i = 0; i < 10; i++) el?.click();
-new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1000)), 500))
+new Promise(resolve => setTimeout(() => {
+  const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1000);
+  const match = text?.match(/[A-Z0-9]{6}/);
+  if (match) resolve('CODE: ' + match[0]);
+  else resolve('NO_CODE_IN_TEXT\n' + text);
+}, 800))
 ```
+If NO_CODE, run the universal code finder below.
 
 ### Memory Challenge
 Click "I Remember" then wait for the code to appear:

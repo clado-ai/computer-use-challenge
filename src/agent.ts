@@ -7,8 +7,9 @@ import * as path from "node:path";
 const MODEL = "openai/gpt-oss-120b";
 const MAX_TOKENS = 8192;
 const CHALLENGE_URL = "https://serene-frangipane-7fd25b.netlify.app";
-const MAX_TURNS = parseInt(process.env.MAX_TURNS || "300", 10);
+const MAX_TURNS = parseInt(process.env.MAX_TURNS || "1000", 10);
 const MAX_STEPS = parseInt(process.env.MAX_STEPS || "30", 10);
+const MAX_API_RETRIES = 5;
 
 // load system prompt
 const systemPromptPath = path.join(import.meta.dir, "prompts", "SYSTEM.md");
@@ -51,46 +52,48 @@ export async function runAgent(): Promise<AgentResult> {
   while (turnCount < MAX_TURNS && !interrupted) {
     turnCount++;
 
-    let response: OpenAI.Chat.Completions.ChatCompletion;
-    try {
-      response = await client.chat.completions.create({
-        model: MODEL,
-        max_tokens: MAX_TOKENS,
-        tools: toolDefinitions,
-        messages,
-        // @ts-expect-error OpenRouter-specific: pin to Groq provider
-        provider: { order: ["Groq"], allow_fallbacks: false },
-      });
-    } catch (err) {
-      const apiErr = err as { status?: number; error?: unknown; message?: string };
-      console.error(`[api error] status=${apiErr.status} message=${apiErr.message}`);
-      console.error(`[api error] details:`, JSON.stringify(apiErr.error, null, 2));
-      // retry once after 2s
-      if (apiErr.status === 400 || apiErr.status === 502 || apiErr.status === 503) {
-        console.log("[api] retrying in 2s...");
-        await new Promise(r => setTimeout(r, 2000));
-        try {
-          response = await client.chat.completions.create({
-            model: MODEL,
-            max_tokens: MAX_TOKENS,
-            tools: toolDefinitions,
-            messages,
-            // @ts-expect-error OpenRouter-specific: pin to Groq provider
-            provider: { order: ["Groq"], allow_fallbacks: false },
-          });
-        } catch (retryErr) {
-          console.error("[api] retry also failed, stopping");
-          break;
+    let response: OpenAI.Chat.Completions.ChatCompletion | undefined;
+    for (let attempt = 0; attempt <= MAX_API_RETRIES; attempt++) {
+      try {
+        response = await client.chat.completions.create({
+          model: MODEL,
+          max_tokens: MAX_TOKENS,
+          tools: toolDefinitions,
+          messages,
+          // @ts-expect-error OpenRouter-specific: pin to Groq provider
+          provider: { order: ["Groq"], allow_fallbacks: false },
+        });
+        break;
+      } catch (err) {
+        const apiErr = err as { status?: number; error?: unknown; message?: string };
+        console.error(`[api error] attempt ${attempt + 1}/${MAX_API_RETRIES + 1} status=${apiErr.status} message=${apiErr.message}`);
+        console.error(`[api error] details:`, JSON.stringify(apiErr.error, null, 2));
+        if (attempt < MAX_API_RETRIES) {
+          const delay = Math.min(2000 * 2 ** attempt, 30000);
+          console.log(`[api] retrying in ${delay / 1000}s...`);
+          await new Promise(r => setTimeout(r, delay));
         }
-      } else {
-        throw err;
       }
+    }
+
+    if (!response) {
+      // all retries failed — reset context and try fresh
+      console.log("[agent] all API retries failed, resetting context and continuing...");
+      messages.length = 0;
+      messages.push(
+        { role: "system", content: SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: `Continue solving the challenge. You are on step ${stepsCompleted + 1} of 30. Use browser_evaluate to read the current page state and continue.`,
+        },
+      );
+      continue;
     }
 
     const choice = response.choices[0];
     if (!choice) {
-      console.log("\n[agent] no choice in response");
-      break;
+      console.log("[agent] no choice in response, continuing...");
+      continue;
     }
 
     const message = choice.message;
@@ -120,12 +123,19 @@ export async function runAgent(): Promise<AgentResult> {
     transcript.push({ role: "assistant", content: message });
 
     if (choice.finish_reason === "stop" || toolCalls.length === 0) {
-      if (choice.finish_reason === "stop") {
-        console.log("\n[agent] finished (stop)");
-      } else {
-        console.log(`\n[agent] stopped: ${choice.finish_reason}`);
+      if (stepsCompleted >= MAX_STEPS) {
+        console.log("\n[agent] all steps completed!");
+        break;
       }
-      break;
+      // model stopped early — nudge it to continue
+      console.log(`[agent] model stopped at step ${stepsCompleted}, nudging to continue...`);
+      const { refusal: _r, ...cleanMsg } = message as typeof message & { refusal?: unknown };
+      messages.push(cleanMsg);
+      messages.push({
+        role: "user",
+        content: `You stopped but only completed ${stepsCompleted}/${MAX_STEPS} steps. Keep going — solve step ${stepsCompleted + 1}. Use browser_evaluate to read the current page and continue.`,
+      });
+      continue;
     }
 
     // append assistant message (with tool_calls) to conversation

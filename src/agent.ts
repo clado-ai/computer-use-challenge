@@ -130,7 +130,6 @@ export async function runAgent(): Promise<AgentResult> {
           max_tokens: MAX_TOKENS,
           tools: toolDefinitions,
           messages,
-          // @ts-expect-error OpenRouter-specific: pin provider based on model
           ...(MODEL.startsWith("anthropic/") ? { provider: { order: ["Anthropic"], allow_fallbacks: false } } :
               MODEL.includes("gpt-oss") ? { provider: { order: ["Groq"], allow_fallbacks: false } } : {}),
         });

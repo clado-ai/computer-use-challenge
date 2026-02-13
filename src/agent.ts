@@ -4,7 +4,7 @@ import { MetricsTracker } from "./metrics.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const MODEL = "claude-haiku-4-5-20251001";
+const MODEL = "claude-opus-4-6";
 const MAX_TOKENS = 8192;
 const CHALLENGE_URL = "https://serene-frangipane-7fd25b.netlify.app";
 const MAX_TURNS = parseInt(process.env.MAX_TURNS || "300", 10);
@@ -33,6 +33,7 @@ export async function runAgent(): Promise<AgentResult> {
   ];
 
   let stepsCompleted = 0;
+  let prevStepsCompleted = 0;
   let turnCount = 0;
 
   metrics.startAgent();
@@ -50,7 +51,6 @@ export async function runAgent(): Promise<AgentResult> {
       messages,
     });
 
-    // count tool calls in this response
     const toolUseBlocks = response.content.filter(
       (b): b is Anthropic.Messages.ToolUseBlock => b.type === "tool_use",
     );
@@ -60,13 +60,10 @@ export async function runAgent(): Promise<AgentResult> {
       toolUseBlocks.length,
     );
 
-    // log text blocks
     for (const block of response.content) {
       if (block.type === "text" && block.text.trim()) {
         console.log(`[agent] ${block.text.trim().slice(0, 200)}`);
 
-        // detect step completion from agent reasoning
-        // "Step N" means we're viewing step N, so we completed N-1
         const stepMatch = block.text.match(/step\s+(\d+)/i);
         if (stepMatch) {
           const stepNum = parseInt(stepMatch[1]!, 10);
@@ -134,6 +131,11 @@ export async function runAgent(): Promise<AgentResult> {
           stepsCompleted = completed;
         }
       }
+
+      // early exit: stop processing more tool results once we hit target
+      if (stepsCompleted >= MAX_STEPS) {
+        break;
+      }
     }
 
     // check if we hit step target
@@ -146,9 +148,11 @@ export async function runAgent(): Promise<AgentResult> {
     messages.push({ role: "user", content: toolResults });
     transcript.push({ role: "user", content: toolResults });
 
-    // context management: if messages are getting long, trim old tool results
-    if (messages.length > 60) {
-      trimContext(messages);
+    // clear context on step transition — keep only the first message (initial prompt)
+    if (stepsCompleted > prevStepsCompleted) {
+      console.log(`[context] step ${prevStepsCompleted} → ${stepsCompleted}, clearing context`);
+      messages.splice(1); // remove everything after the first message
+      prevStepsCompleted = stepsCompleted;
     }
   }
 
@@ -159,26 +163,4 @@ export async function runAgent(): Promise<AgentResult> {
   metrics.endAgent();
   const report = metrics.getReport(CHALLENGE_URL, MODEL, stepsCompleted);
   return { stepsCompleted, metrics: report, transcript };
-}
-
-function trimContext(messages: Anthropic.Messages.MessageParam[]) {
-  // keep first message (initial prompt) + last 40 messages
-  // replace middle tool results with summaries
-  if (messages.length <= 42) return;
-
-  const keep = 40;
-  const toTrim = messages.length - keep - 1; // -1 for first message
-  for (let i = 1; i < toTrim + 1 && i < messages.length - keep; i++) {
-    const msg = messages[i];
-    if (!msg) continue;
-    if (msg.role === "user" && Array.isArray(msg.content)) {
-      // replace tool results with short summaries
-      msg.content = (msg.content as Anthropic.Messages.ToolResultBlockParam[]).map((block) => {
-        if (block.type === "tool_result" && typeof block.content === "string" && block.content.length > 200) {
-          return { ...block, content: block.content.slice(0, 200) + "... (trimmed)" };
-        }
-        return block;
-      });
-    }
-  }
 }

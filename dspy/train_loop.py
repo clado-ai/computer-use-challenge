@@ -49,7 +49,7 @@ MAX_WINDOW = 150                # max turn budget
 SLIDING_WINDOW_SIZE = 5         # more history for GEPA
 SUBPROCESS_TIMEOUT = 600        # 10 minutes
 MAX_CONSECUTIVE_FAILURES = 3    # stop after this many agent crashes in a row
-DEFAULT_PARALLEL_AGENTS = 3     # run N agents concurrently per iteration
+DEFAULT_PARALLEL_AGENTS = 5     # run N agents concurrently per iteration
 
 
 # ---- state management ----

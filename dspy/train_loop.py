@@ -1,16 +1,19 @@
 """
-Iterative prompt optimization training loop.
+Iterative prompt optimization training loop with step curriculum.
 
-Simple loop: run agent → analyze transcript → LLM improves prompt → repeat.
+Curriculum: starts at target=2 steps, advances by 2 after clearing. Turn budget
+scales from 30 to 300 with diminishing increases (power curve).
 
 Usage:
-    uv run dspy/train_loop.py                          # default 10 iterations
-    uv run dspy/train_loop.py --max-iterations 5       # cap iterations
+    uv run dspy/train_loop.py                          # default 50 iterations
+    uv run dspy/train_loop.py --max-iterations 20      # cap iterations
+    uv run dspy/train_loop.py --initial-target 6       # start at 6 steps
 """
 
 from __future__ import annotations
 
 import glob as globmod
+import json
 import os
 import signal
 import shutil
@@ -33,6 +36,22 @@ PROMPT_HISTORY_DIR = SCRIPT_DIR / "prompt_history"
 BROWSER_DATA_DIR = PROJECT_DIR / ".browser-data"
 
 SUBPROCESS_TIMEOUT = 3600  # 60 minutes
+MAX_STEPS = 30
+STEP_INCREMENT = 2
+
+
+# ---- turn budget ----
+
+def compute_turn_budget(step_target: int) -> int:
+    """Scale turn budget: 30 at target=2, 300 at target=30, diminishing increases.
+
+    Uses power curve (exponent 0.85) so early levels get proportionally
+    more turns per new step than later levels.
+    """
+    if step_target <= 2:
+        return 30
+    ratio = (step_target - 2) / (MAX_STEPS - 2)  # 0..1
+    return int(30 + 270 * ratio ** 0.85)
 
 
 # ---- prompt backup ----
@@ -87,21 +106,27 @@ def _clean_all_browser_dirs() -> None:
 
 # ---- agent runner ----
 
-def run_agent() -> tuple[int, str]:
+def run_agent(step_target: int, turn_budget: int) -> tuple[int, str]:
     """Run the agent subprocess with clean browser state."""
     _kill_orphaned_browsers()
     _clean_all_browser_dirs()
 
     print(f"\n{'='*60}")
-    print(f"RUNNING AGENT")
+    print(f"RUNNING AGENT: target={step_target} steps, max_turns={turn_budget}")
     print(f"{'='*60}\n")
+
+    env = {
+        **os.environ,
+        "MAX_TURNS": str(turn_budget),
+        "MAX_STEPS": str(step_target),
+    }
 
     proc = None
     try:
         proc = subprocess.Popen(
             ["bun", "run", "src/index.ts"],
             cwd=str(PROJECT_DIR),
-            env=os.environ.copy(),
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -138,50 +163,82 @@ def run_agent() -> tuple[int, str]:
     return rc, output
 
 
-# ---- transcript discovery ----
+# ---- file discovery ----
 
-def find_latest_transcript() -> Path | None:
-    """Find the most recent transcript file in runs/."""
+def find_new_files(before: set[str]) -> tuple[Path | None, Path | None]:
+    """Find new run_*.json and transcript_*.json created after `before` snapshot."""
     if not RUNS_DIR.exists():
-        return None
-    transcripts = sorted(RUNS_DIR.glob("transcript_*.json"), reverse=True)
-    if not transcripts:
-        # Also check for trajectory files
-        transcripts = sorted(RUNS_DIR.glob("trajectory_*.json"), reverse=True)
-    return transcripts[0] if transcripts else None
+        return None, None
+
+    new_files = [f for f in RUNS_DIR.iterdir() if f.name not in before]
+    run_file = None
+    transcript_file = None
+
+    for f in sorted(new_files, reverse=True):
+        if f.name.startswith("run_") and f.suffix == ".json" and run_file is None:
+            run_file = f
+        elif f.name.startswith("transcript_") and f.suffix == ".json" and transcript_file is None:
+            transcript_file = f
+
+    return run_file, transcript_file
 
 
 # ---- main loop ----
 
-def main(max_iterations: int = 50) -> None:
+def main(max_iterations: int = 50, initial_target: int = 2) -> None:
     PROMPT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
+    step_target = initial_target
+
     for i in range(max_iterations):
+        turn_budget = compute_turn_budget(step_target)
+
         print(f"\n{'#'*60}")
-        print(f"# ITERATION {i}")
+        print(f"# ITERATION {i} | target={step_target} steps | turns={turn_budget}")
         print(f"{'#'*60}")
 
         # 1. Backup current SYSTEM.md
         backup_prompt(i)
 
-        # 2. Run the agent
-        rc, output = run_agent()
+        # 2. Snapshot runs/ before agent run
+        files_before = set(f.name for f in RUNS_DIR.iterdir()) if RUNS_DIR.exists() else set()
 
-        # 3. Find latest transcript
-        transcript = find_latest_transcript()
-        if not transcript:
+        # 3. Run the agent
+        rc, output = run_agent(step_target, turn_budget)
+
+        # 4. Find new files from this run
+        run_file, transcript_file = find_new_files(files_before)
+
+        # 5. Read steps completed from run metrics
+        steps_completed = 0
+        if run_file:
+            try:
+                metrics = json.loads(run_file.read_text())
+                steps_completed = metrics.get("stepsCompleted", 0)
+            except Exception:
+                pass
+
+        print(f"[train_loop] completed {steps_completed}/{step_target} steps")
+
+        # 6. Advance curriculum if target met
+        if steps_completed >= step_target and step_target < MAX_STEPS:
+            old_target = step_target
+            step_target = min(step_target + STEP_INCREMENT, MAX_STEPS)
+            print(f"[train_loop] ADVANCING: {old_target} -> {step_target} steps")
+
+        # 7. Optimize prompt if we have a transcript
+        if not transcript_file:
             print("[train_loop] no transcript found, skipping optimization")
             continue
 
-        print(f"[train_loop] using transcript: {transcript.name}")
+        print(f"[train_loop] using transcript: {transcript_file.name}")
 
-        # 4. LLM improves prompt
         current_prompt = SYSTEM_PROMPT_PATH.read_text() if SYSTEM_PROMPT_PATH.exists() else ""
 
         try:
             from optimize import run_optimization
-            result = run_optimization(transcript, current_prompt)
+            result = run_optimization(transcript_file, current_prompt)
             optimized_prompt = result["optimized_prompt"]
         except Exception as e:
             print(f"[train_loop] optimization failed: {e}")
@@ -189,7 +246,7 @@ def main(max_iterations: int = 50) -> None:
             traceback.print_exc()
             continue
 
-        # 5. Write new SYSTEM.md
+        # 8. Write new SYSTEM.md
         if optimized_prompt and optimized_prompt != current_prompt:
             SYSTEM_PROMPT_PATH.write_text(optimized_prompt)
             print(f"[train_loop] wrote new SYSTEM.md ({len(optimized_prompt)} chars)")
@@ -197,7 +254,7 @@ def main(max_iterations: int = 50) -> None:
             print("[train_loop] no change to SYSTEM.md")
 
     print(f"\n{'='*60}")
-    print(f"TRAINING COMPLETE ({max_iterations} iterations)")
+    print(f"TRAINING COMPLETE ({max_iterations} iterations, final target={step_target})")
     print(f"{'='*60}")
 
 
@@ -208,5 +265,9 @@ if __name__ == "__main__":
         "--max-iterations", type=int, default=50,
         help="Maximum number of iterations (default: 50)",
     )
+    parser.add_argument(
+        "--initial-target", type=int, default=2,
+        help="Initial step target (default: 2)",
+    )
     args = parser.parse_args()
-    main(max_iterations=args.max_iterations)
+    main(max_iterations=args.max_iterations, initial_target=args.initial_target)

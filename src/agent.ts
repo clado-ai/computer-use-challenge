@@ -33,13 +33,12 @@ export async function runAgent(): Promise<AgentResult> {
 
   let stepsCompleted = 0;
   let turnCount = 0;
-  const maxTurns = 150; // safety limit
 
   metrics.startAgent();
   console.log(`starting agent with ${MODEL} (target: step ${MAX_STEPS})...`);
   console.log(`challenge: ${CHALLENGE_URL}\n`);
 
-  while (turnCount < maxTurns) {
+  while (true) {
     turnCount++;
 
     const response = await client.messages.create({

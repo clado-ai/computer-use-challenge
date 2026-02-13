@@ -279,8 +279,8 @@ export async function runAgent(): Promise<AgentResult> {
       );
       prevStepsCompleted = stepsCompleted;
     }
-    // stuck detection: bypass via sessionStorage after 5 turns on same step
-    else if (turnsOnSameStep > 0 && turnsOnSameStep % 5 === 0) {
+    // stuck detection: sessionStorage bypass for steps 18-20 after 10 turns
+    else if (turnsOnSameStep === 10 && stepsCompleted + 1 >= 18 && stepsCompleted + 1 <= 20) {
       const currentStep = stepsCompleted + 1;
       console.log(`[stuck] ${turnsOnSameStep} turns on step ${currentStep}, attempting sessionStorage bypass...`);
       const bypassResult = await bypassStepViaSessionStorage(currentStep);
@@ -308,17 +308,21 @@ export async function runAgent(): Promise<AgentResult> {
             content: `You are now on step ${nextStep} of 30. The browser is already open — do NOT use browser_navigate.\n\nIMPORTANT: You must SOLVE the challenge first to get a NEW 6-character code. Do NOT try to submit yet.\n1. Read the challenge description below\n2. Identify the challenge type\n3. Solve it using the matching pattern\n4. Extract the 6-character code\n5. Then submit using the SUBMIT CODE pattern\n\nCurrent page:\n${pageText}`,
           },
         );
-      } else {
-        console.log(`[bypass] failed, resetting context for retry`);
-        messages.length = 0;
-        messages.push(
-          { role: "system", content: SYSTEM_PROMPT },
-          {
-            role: "user",
-            content: `STUCK RECOVERY: You have been stuck on step ${currentStep} for ${turnsOnSameStep} turns.\n\nSTOP what you are doing. The buttons labeled "Next Step", "Proceed", "Continue", "Advance" etc. are DECOYS — they do NOT advance the challenge. Only submitting the CORRECT 6-character code works.\n\nStart completely fresh:\n1. Read the page: browser_evaluate with document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)\n2. Identify which challenge pattern this is\n3. SOLVE it to get a NEW code (do NOT reuse old codes)\n4. Submit the code using the SUBMIT CODE pattern`,
-          },
-        );
       }
+      // If bypass failed on 18-20, fall through — next iteration will hit the general stuck recovery at 15
+    }
+    // general stuck detection: hard reset context every 15 turns
+    else if (turnsOnSameStep > 0 && turnsOnSameStep % 15 === 0) {
+      const currentStep = stepsCompleted + 1;
+      console.log(`[stuck] ${turnsOnSameStep} turns on step ${currentStep}, resetting context`);
+      messages.length = 0;
+      messages.push(
+        { role: "system", content: SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: `STUCK RECOVERY: You have been stuck on step ${currentStep} for ${turnsOnSameStep} turns.\n\nSTOP what you are doing. The buttons labeled "Next Step", "Proceed", "Continue", "Advance" etc. are DECOYS — they do NOT advance the challenge. Only submitting the CORRECT 6-character code works.\n\nStart completely fresh:\n1. Read the page: browser_evaluate with document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)\n2. Identify which challenge pattern this is\n3. SOLVE it to get a NEW code (do NOT reuse old codes)\n4. Submit the code using the SUBMIT CODE pattern`,
+        },
+      );
     }
   }
 

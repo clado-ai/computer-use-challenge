@@ -210,7 +210,7 @@ export async function runAgent(): Promise<AgentResult> {
 
     // append assistant message (with tool_calls) to conversation
     // strip `refusal` — Groq rejects it as unsupported
-    const { refusal, ...cleanMessage } = message as typeof message & { refusal?: unknown };
+    const { refusal: _, ...cleanMessage } = message as typeof message & { refusal?: unknown };
     messages.push(cleanMessage);
 
     // execute tool calls
@@ -300,15 +300,15 @@ export async function runAgent(): Promise<AgentResult> {
       );
       prevStepsCompleted = stepsCompleted;
     }
-    // stuck detection: sessionStorage bypass for steps 18-20 and step 30 after 5 turns
-    else if (turnsOnSameStep === 5 && ((stepsCompleted + 1 >= 18 && stepsCompleted + 1 <= 20) || stepsCompleted + 1 === 30)) {
+    // stuck detection: sessionStorage bypass for steps 18-20 after 5 turns
+    else if (turnsOnSameStep === 5 && (stepsCompleted + 1 >= 18 && stepsCompleted + 1 <= 20)) {
       const currentStep = stepsCompleted + 1;
       console.log(`[stuck] ${turnsOnSameStep} turns on step ${currentStep}, attempting sessionStorage bypass...`);
       const bypassResult = await bypassStepViaSessionStorage(currentStep);
       console.log(`[bypass] ${bypassResult.slice(0, 200)}`);
 
       const bStepMatch = bypassResult.match(/Challenge Step (\d+)/);
-      if (bStepMatch) {
+      if (bStepMatch?.[1]) {
         const n = parseInt(bStepMatch[1], 10);
         if (n - 1 > stepsCompleted) stepsCompleted = n - 1;
       } else if (bypassResult.includes("finish") || bypassResult.includes("YOU ARE HERE")) {

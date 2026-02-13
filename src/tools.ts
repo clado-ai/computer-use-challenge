@@ -17,20 +17,46 @@ const PROFILE_DIR = process.env.BROWSER_DATA_DIR
   ? path.resolve(process.env.BROWSER_DATA_DIR)
   : path.resolve(import.meta.dir, "..", ".browser-data");
 
-async function ensurePage(): Promise<Page> {
-  if (currentPage && !currentPage.isClosed()) return currentPage;
+async function launchBrowser(): Promise<BrowserContext> {
+  fs.mkdirSync(PROFILE_DIR, { recursive: true });
+  console.log("[browser] launching chromium...");
+  const headless = process.env.HEADLESS !== "false";
+  const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
+    headless,
+    viewport: { width: 1280, height: 720 },
+    args: ["--disable-blink-features=AutomationControlled"],
+  });
+  console.log("[browser] ready");
+  return ctx;
+}
 
-  if (!context) {
-    fs.mkdirSync(PROFILE_DIR, { recursive: true });
-    console.log("[browser] launching chromium...");
-    const headless = process.env.HEADLESS !== "false";
-    context = await chromium.launchPersistentContext(PROFILE_DIR, {
-      headless,
-      viewport: { width: 1280, height: 720 },
-      args: ["--disable-blink-features=AutomationControlled"],
-    });
-    console.log("[browser] ready");
+function isContextAlive(ctx: BrowserContext): boolean {
+  try {
+    // accessing pages() on a closed context throws
+    ctx.pages();
+    return true;
+  } catch {
+    return false;
   }
+}
+
+async function ensurePage(): Promise<Page> {
+  // check if existing page is still usable
+  if (currentPage && !currentPage.isClosed() && context && isContextAlive(context)) {
+    return currentPage;
+  }
+
+  // context is dead or missing — clean up and re-launch
+  if (context) {
+    if (!isContextAlive(context)) {
+      console.log("[browser] context died, re-launching...");
+    }
+    try { await context.close(); } catch { /* already dead */ }
+    context = null;
+    currentPage = null;
+  }
+
+  context = await launchBrowser();
 
   // use existing page or create new one
   const pages = context.pages();
@@ -132,29 +158,48 @@ export const toolDefinitions: Anthropic.Messages.Tool[] = [
 
 // ---- tool execution ----
 
+async function executeToolInner(
+  name: string,
+  input: Record<string, unknown>,
+): Promise<string> {
+  switch (name) {
+    case "browser_navigate":
+      return await toolNavigate(input.url as string);
+    case "browser_snapshot":
+      return await toolSnapshot();
+    case "browser_action":
+      return await toolAction(
+        input.action as string,
+        input.ref as string | undefined,
+        input.value as string | undefined,
+      );
+    case "browser_evaluate":
+      return await toolEvaluate(input.script as string);
+    default:
+      return `unknown tool: ${name}`;
+  }
+}
+
 export async function executeTool(
   name: string,
   input: Record<string, unknown>,
 ): Promise<string> {
   try {
-    switch (name) {
-      case "browser_navigate":
-        return await toolNavigate(input.url as string);
-      case "browser_snapshot":
-        return await toolSnapshot();
-      case "browser_action":
-        return await toolAction(
-          input.action as string,
-          input.ref as string | undefined,
-          input.value as string | undefined,
-        );
-      case "browser_evaluate":
-        return await toolEvaluate(input.script as string);
-      default:
-        return `unknown tool: ${name}`;
-    }
+    return await executeToolInner(name, input);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    // if the browser context died, force a re-launch and retry once
+    if (msg.includes("has been closed") || msg.includes("Target closed")) {
+      console.log("[browser] context lost, recovering...");
+      context = null;
+      currentPage = null;
+      try {
+        return await executeToolInner(name, input);
+      } catch (retryErr) {
+        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        return `error: ${retryMsg}`;
+      }
+    }
     return `error: ${msg}`;
   }
 }

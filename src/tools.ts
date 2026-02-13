@@ -230,8 +230,10 @@ async function toolSnapshot(): Promise<string> {
 
   const script = await getSnapshotScript();
   const snapshot = await page.evaluate((s: string) => {
+    // biome-ignore lint/suspicious/noExplicitAny: browser globalThis has dynamic properties
     const w = globalThis as any;
     if (!w.__devBrowser_getAISnapshot) {
+      // biome-ignore lint/security/noGlobalEval: injecting snapshot script into browser context
       eval(s);
     }
     return w.__devBrowser_getAISnapshot();
@@ -301,6 +303,7 @@ async function resolveRef(
   ref: string,
 ): Promise<ElementHandle | null> {
   const handle = await page.evaluateHandle((r: string) => {
+    // biome-ignore lint/suspicious/noExplicitAny: browser globalThis has dynamic properties
     const w = globalThis as any;
     const refs = w.__devBrowserRefs;
     if (!refs) return null;

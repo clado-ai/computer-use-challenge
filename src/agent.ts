@@ -70,7 +70,7 @@ export async function runAgent(): Promise<AgentResult> {
 
         const stepMatch = block.text.match(/step\s+(\d+)/i);
         if (stepMatch) {
-          const stepNum = parseInt(stepMatch[1]!, 10);
+          const stepNum = parseInt(stepMatch[1] ?? "0", 10);
           const completed = stepNum - 1;
           if (completed > stepsCompleted && completed <= 30) {
             stepsCompleted = completed;
@@ -129,7 +129,7 @@ export async function runAgent(): Promise<AgentResult> {
       // "Step N" in results means we're on step N, so completed N-1
       const resultStepMatch = result.match(/(?:step|challenge)\s+(\d+)/i);
       if (resultStepMatch) {
-        const stepNum = parseInt(resultStepMatch[1]!, 10);
+        const stepNum = parseInt(resultStepMatch[1] ?? "0", 10);
         const completed = stepNum - 1;
         if (completed > stepsCompleted && completed <= 30) {
           stepsCompleted = completed;

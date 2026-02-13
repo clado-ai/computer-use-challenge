@@ -66,12 +66,14 @@ export async function runAgent(): Promise<AgentResult> {
         console.log(`[agent] ${block.text.trim().slice(0, 200)}`);
 
         // detect step completion from agent reasoning
+        // "Step N" means we're viewing step N, so we completed N-1
         const stepMatch = block.text.match(/step\s+(\d+)/i);
         if (stepMatch) {
           const stepNum = parseInt(stepMatch[1]!, 10);
-          if (stepNum > stepsCompleted && stepNum <= 30) {
-            stepsCompleted = stepNum;
-            console.log(`  >> step ${stepsCompleted}/30 detected`);
+          const completed = stepNum - 1;
+          if (completed > stepsCompleted && completed <= 30) {
+            stepsCompleted = completed;
+            console.log(`  >> completed step ${stepsCompleted}/30 (now on step ${stepNum})`);
           }
         }
       }
@@ -123,11 +125,13 @@ export async function runAgent(): Promise<AgentResult> {
       });
 
       // detect step from tool results (e.g. "Step 5" visible in snapshot)
+      // "Step N" in results means we're on step N, so completed N-1
       const resultStepMatch = result.match(/(?:step|challenge)\s+(\d+)/i);
       if (resultStepMatch) {
         const stepNum = parseInt(resultStepMatch[1]!, 10);
-        if (stepNum > stepsCompleted && stepNum <= 30) {
-          stepsCompleted = stepNum;
+        const completed = stepNum - 1;
+        if (completed > stepsCompleted && completed <= 30) {
+          stepsCompleted = completed;
         }
       }
     }

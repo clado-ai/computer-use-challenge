@@ -31,7 +31,6 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 RUNS_DIR = PROJECT_DIR / "runs"
-SYSTEM_PROMPT_PATH = PROJECT_DIR / "src" / "prompts" / "SYSTEM.md"
 SYSTEM_BASE_PATH = PROJECT_DIR / "src" / "prompts" / "SYSTEM_BASE.md"
 PROMPT_HISTORY_DIR = SCRIPT_DIR / "prompt_history"
 BROWSER_DATA_DIR = PROJECT_DIR / ".browser-data"
@@ -58,12 +57,12 @@ def compute_turn_budget(step_target: int) -> int:
 # ---- prompt backup ----
 
 def backup_prompt(iteration: int) -> Path:
-    """Backup the current SYSTEM.md before overwriting."""
+    """Backup the current SYSTEM_BASE.md before overwriting."""
     PROMPT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup_path = PROMPT_HISTORY_DIR / f"SYSTEM_iter{iteration}_{ts}.md"
-    if SYSTEM_PROMPT_PATH.exists():
-        shutil.copy2(SYSTEM_PROMPT_PATH, backup_path)
+    if SYSTEM_BASE_PATH.exists():
+        shutil.copy2(SYSTEM_BASE_PATH, backup_path)
         print(f"[train_loop] backed up prompt to {backup_path.name}")
     return backup_path
 
@@ -121,6 +120,7 @@ def run_agent(step_target: int, turn_budget: int) -> tuple[int, str]:
         "MAX_TURNS": str(turn_budget),
         "MAX_STEPS": str(step_target),
         "HEADLESS": os.environ.get("HEADLESS", "true"),
+        "SYSTEM_PROMPT_PATH": str(SYSTEM_BASE_PATH),
     }
 
     proc = None
@@ -191,14 +191,6 @@ def main(max_iterations: int = 50, initial_target: int = 2) -> None:
     PROMPT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Initialize SYSTEM.md from SYSTEM_BASE.md (start fresh from minimal prompt)
-    if SYSTEM_BASE_PATH.exists():
-        backup_prompt(-1)  # backup the old SYSTEM.md before overwriting
-        shutil.copy2(SYSTEM_BASE_PATH, SYSTEM_PROMPT_PATH)
-        print(f"[train_loop] initialized SYSTEM.md from SYSTEM_BASE.md")
-    else:
-        print(f"[train_loop] WARNING: SYSTEM_BASE.md not found at {SYSTEM_BASE_PATH}")
-
     step_target = initial_target
 
     for i in range(max_iterations):
@@ -208,7 +200,7 @@ def main(max_iterations: int = 50, initial_target: int = 2) -> None:
         print(f"# ITERATION {i} | target={step_target} steps | turns={turn_budget}")
         print(f"{'#'*60}")
 
-        # 1. Backup current SYSTEM.md
+        # 1. Backup current SYSTEM_BASE.md
         backup_prompt(i)
 
         # 2. Snapshot runs/ before agent run
@@ -244,7 +236,7 @@ def main(max_iterations: int = 50, initial_target: int = 2) -> None:
 
         print(f"[train_loop] using transcript: {transcript_file.name}")
 
-        current_prompt = SYSTEM_PROMPT_PATH.read_text() if SYSTEM_PROMPT_PATH.exists() else ""
+        current_prompt = SYSTEM_BASE_PATH.read_text() if SYSTEM_BASE_PATH.exists() else ""
 
         try:
             from optimize import run_optimization
@@ -256,12 +248,12 @@ def main(max_iterations: int = 50, initial_target: int = 2) -> None:
             traceback.print_exc()
             continue
 
-        # 8. Write new SYSTEM.md
+        # 8. Write updated SYSTEM_BASE.md
         if optimized_prompt and optimized_prompt != current_prompt:
-            SYSTEM_PROMPT_PATH.write_text(optimized_prompt)
-            print(f"[train_loop] wrote new SYSTEM.md ({len(optimized_prompt)} chars)")
+            SYSTEM_BASE_PATH.write_text(optimized_prompt)
+            print(f"[train_loop] wrote new SYSTEM_BASE.md ({len(optimized_prompt)} chars)")
         else:
-            print("[train_loop] no change to SYSTEM.md")
+            print("[train_loop] no change to SYSTEM_BASE.md")
 
     print(f"\n{'='*60}")
     print(f"TRAINING COMPLETE ({max_iterations} iterations, final target={step_target})")

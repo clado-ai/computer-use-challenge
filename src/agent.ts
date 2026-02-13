@@ -11,8 +11,8 @@ const MAX_TURNS = parseInt(process.env.MAX_TURNS || "1000", 10);
 const MAX_STEPS = parseInt(process.env.MAX_STEPS || "30", 10);
 const MAX_API_RETRIES = 5;
 
-// load system prompt
-const systemPromptPath = path.join(import.meta.dir, "prompts", "SYSTEM.md");
+// load system prompt (configurable for training loop)
+const systemPromptPath = process.env.SYSTEM_PROMPT_PATH || path.join(import.meta.dir, "prompts", "SYSTEM.md");
 const SYSTEM_PROMPT = fs.readFileSync(systemPromptPath, "utf-8");
 
 // Bypass: decode sessionStorage to get the code and submit directly.

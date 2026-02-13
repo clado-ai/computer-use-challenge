@@ -225,7 +225,7 @@ async function toolAction(
 
   switch (action) {
     case "click":
-      await el.click({ timeout: 5000 });
+      await el.click({ force: true });
       return `clicked ref ${ref}`;
     case "type":
       await el.fill(value || "");

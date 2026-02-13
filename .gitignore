@@ -9,3 +9,9 @@ dspy/prompts/
 dspy/data/
 __pycache__/
 .browser-data/
+
+# training loop
+dspy/iterations/
+dspy/prompt_history/
+dspy/training_state.json
+dspy/.venv/

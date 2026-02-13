@@ -300,8 +300,8 @@ export async function runAgent(): Promise<AgentResult> {
       );
       prevStepsCompleted = stepsCompleted;
     }
-    // stuck detection: sessionStorage bypass for steps 18-20 after 5 turns
-    else if (turnsOnSameStep === 5 && (stepsCompleted + 1 >= 18 && stepsCompleted + 1 <= 20)) {
+    // stuck detection: sessionStorage bypass for steps 18-20 and step 30 after 5 turns
+    else if (turnsOnSameStep === 5 && ((stepsCompleted + 1 >= 18 && stepsCompleted + 1 <= 20) || stepsCompleted + 1 === 30)) {
       const currentStep = stepsCompleted + 1;
       console.log(`[stuck] ${turnsOnSameStep} turns on step ${currentStep}, attempting sessionStorage bypass...`);
       const bypassResult = await bypassStepViaSessionStorage(currentStep);

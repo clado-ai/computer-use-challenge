@@ -119,6 +119,7 @@ def run_agent(step_target: int, turn_budget: int) -> tuple[int, str]:
         **os.environ,
         "MAX_TURNS": str(turn_budget),
         "MAX_STEPS": str(step_target),
+        "HEADLESS": os.environ.get("HEADLESS", "true"),
     }
 
     proc = None

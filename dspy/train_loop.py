@@ -1,8 +1,9 @@
 """
-Iterative prompt optimization training loop with step curriculum.
+Iterative prompt optimization training loop with step + model curriculum.
 
-Curriculum: starts at target=2 steps, advances by 2 after clearing. Turn budget
-scales from 30 to 300 with diminishing increases (power curve).
+Step curriculum: starts at target=2 steps, advances by 2 after clearing.
+Model curriculum: cycles through models, resetting step target for each.
+Turn budget scales from 30 to 300 with diminishing increases (power curve).
 
 Usage:
     uv run dspy/train_loop.py                          # default 50 iterations
@@ -39,6 +40,14 @@ SUBPROCESS_TIMEOUT = 3600  # 60 minutes
 MAX_STEPS = 30
 STEP_INCREMENT = 2
 
+# Model curriculum: each model runs through the full step curriculum (2→30),
+# then we move to the next model and reset step target.
+MODEL_CURRICULUM = [
+    "anthropic/claude-opus-4.6",
+    "anthropic/claude-haiku-4.5",
+    "openai/gpt-oss-120b",
+]
+
 
 # ---- turn budget ----
 
@@ -56,11 +65,12 @@ def compute_turn_budget(step_target: int) -> int:
 
 # ---- prompt backup ----
 
-def backup_prompt(iteration: int) -> Path:
+def backup_prompt(iteration: int, model: str) -> Path:
     """Backup the current SYSTEM_BASE.md before overwriting."""
     PROMPT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = PROMPT_HISTORY_DIR / f"SYSTEM_iter{iteration}_{ts}.md"
+    model_short = model.split("/")[-1]
+    backup_path = PROMPT_HISTORY_DIR / f"SYSTEM_iter{iteration}_{model_short}_{ts}.md"
     if SYSTEM_BASE_PATH.exists():
         shutil.copy2(SYSTEM_BASE_PATH, backup_path)
         print(f"[train_loop] backed up prompt to {backup_path.name}")
@@ -106,13 +116,13 @@ def _clean_all_browser_dirs() -> None:
 
 # ---- agent runner ----
 
-def run_agent(step_target: int, turn_budget: int) -> tuple[int, str]:
+def run_agent(step_target: int, turn_budget: int, model: str) -> tuple[int, str]:
     """Run the agent subprocess with clean browser state."""
     _kill_orphaned_browsers()
     _clean_all_browser_dirs()
 
     print(f"\n{'='*60}")
-    print(f"RUNNING AGENT: target={step_target} steps, max_turns={turn_budget}")
+    print(f"RUNNING AGENT: model={model}, target={step_target} steps, max_turns={turn_budget}")
     print(f"{'='*60}\n")
 
     env = {
@@ -121,6 +131,7 @@ def run_agent(step_target: int, turn_budget: int) -> tuple[int, str]:
         "MAX_STEPS": str(step_target),
         "HEADLESS": os.environ.get("HEADLESS", "true"),
         "SYSTEM_PROMPT_PATH": str(SYSTEM_BASE_PATH),
+        "AGENT_MODEL": model,
     }
 
     proc = None
@@ -185,29 +196,43 @@ def find_new_files(before: set[str]) -> tuple[Path | None, Path | None]:
     return run_file, transcript_file
 
 
-# ---- main loop ----
+# ---- single model phase ----
 
-def main(max_iterations: int = 50, initial_target: int = 2) -> None:
-    PROMPT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+def run_model_phase(
+    model: str,
+    max_iterations: int,
+    initial_target: int,
+    iteration_offset: int,
+) -> int:
+    """Run the step curriculum for a single model.
 
+    Returns the number of iterations actually used.
+    """
     step_target = initial_target
+    iterations_used = 0
+
+    print(f"\n{'*'*60}")
+    print(f"* MODEL PHASE: {model}")
+    print(f"* Starting at step target={initial_target}, max_iterations={max_iterations}")
+    print(f"{'*'*60}")
 
     for i in range(max_iterations):
+        global_iter = iteration_offset + i
+        iterations_used = i + 1
         turn_budget = compute_turn_budget(step_target)
 
         print(f"\n{'#'*60}")
-        print(f"# ITERATION {i} | target={step_target} steps | turns={turn_budget}")
+        print(f"# ITERATION {global_iter} | model={model} | target={step_target} steps | turns={turn_budget}")
         print(f"{'#'*60}")
 
         # 1. Backup current SYSTEM_BASE.md
-        backup_prompt(i)
+        backup_prompt(global_iter, model)
 
         # 2. Snapshot runs/ before agent run
         files_before = set(f.name for f in RUNS_DIR.iterdir()) if RUNS_DIR.exists() else set()
 
         # 3. Run the agent
-        rc, output = run_agent(step_target, turn_budget)
+        rc, output = run_agent(step_target, turn_budget, model)
 
         # 4. Find new files from this run
         run_file, transcript_file = find_new_files(files_before)
@@ -228,6 +253,11 @@ def main(max_iterations: int = 50, initial_target: int = 2) -> None:
             old_target = step_target
             step_target = min(step_target + STEP_INCREMENT, MAX_STEPS)
             print(f"[train_loop] ADVANCING: {old_target} -> {step_target} steps")
+
+        # Check if model completed all 30 steps
+        if step_target > MAX_STEPS:
+            print(f"[train_loop] model {model} completed all {MAX_STEPS} steps!")
+            break
 
         # 7. Optimize prompt if we have a transcript
         if not transcript_file:
@@ -255,8 +285,37 @@ def main(max_iterations: int = 50, initial_target: int = 2) -> None:
         else:
             print("[train_loop] no change to SYSTEM_BASE.md")
 
+    return iterations_used
+
+
+# ---- main ----
+
+def main(max_iterations: int = 50, initial_target: int = 2) -> None:
+    PROMPT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Split iterations evenly across models
+    iters_per_model = max_iterations // len(MODEL_CURRICULUM)
+    remainder = max_iterations % len(MODEL_CURRICULUM)
+
+    iteration_offset = 0
+
+    for idx, model in enumerate(MODEL_CURRICULUM):
+        # Give remainder iterations to the first model
+        model_iters = iters_per_model + (remainder if idx == 0 else 0)
+        if model_iters <= 0:
+            continue
+
+        used = run_model_phase(
+            model=model,
+            max_iterations=model_iters,
+            initial_target=initial_target,
+            iteration_offset=iteration_offset,
+        )
+        iteration_offset += used
+
     print(f"\n{'='*60}")
-    print(f"TRAINING COMPLETE ({max_iterations} iterations, final target={step_target})")
+    print(f"TRAINING COMPLETE ({iteration_offset} total iterations across {len(MODEL_CURRICULUM)} models)")
     print(f"{'='*60}")
 
 
@@ -265,11 +324,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Iterative prompt optimization loop")
     parser.add_argument(
         "--max-iterations", type=int, default=50,
-        help="Maximum number of iterations (default: 50)",
+        help="Total iterations across all models (default: 50)",
     )
     parser.add_argument(
         "--initial-target", type=int, default=2,
-        help="Initial step target (default: 2)",
+        help="Initial step target per model (default: 2)",
     )
     args = parser.parse_args()
     main(max_iterations=args.max_iterations, initial_target=args.initial_target)

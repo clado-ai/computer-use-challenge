@@ -13,7 +13,9 @@ import * as fs from "node:fs";
 let context: BrowserContext | null = null;
 let currentPage: Page | null = null;
 
-const PROFILE_DIR = path.resolve(import.meta.dir, "..", ".browser-data");
+const PROFILE_DIR = process.env.BROWSER_DATA_DIR
+  ? path.resolve(process.env.BROWSER_DATA_DIR)
+  : path.resolve(import.meta.dir, "..", ".browser-data");
 
 async function ensurePage(): Promise<Page> {
   if (currentPage && !currentPage.isClosed()) return currentPage;

@@ -9,6 +9,7 @@ dspy/prompts/
 dspy/data/
 __pycache__/
 .browser-data/
+.browser-data-*/
 
 # training loop
 dspy/iterations/

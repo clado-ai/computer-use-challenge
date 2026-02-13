@@ -47,18 +47,27 @@ def build_lm(api_key: str, model: str) -> dspy.LM:
 
 class BrowserAgentPromptSignature(dspy.Signature):
     """Generate an optimized system prompt for a browser automation agent
-    that solves 30 sequential web challenges. The prompt should instruct
-    the agent to be efficient (minimize tool calls), handle JS dialogs,
-    inspect DOM for hidden information, and act decisively."""
+    that solves 30 sequential web challenges.
+
+    CRITICAL RULES:
+    - NEVER include hardcoded codes, passwords, XOR keys, session storage keys,
+      or any challenge-specific secrets in the prompt.
+    - NEVER include specific JavaScript extraction snippets that decode stored data.
+    - The prompt must teach GENERALIZABLE strategies (tool usage patterns, error
+      recovery, DOM inspection techniques) that work for ANY challenge, not
+      solutions to the specific challenge observed in the rollout.
+    - Focus on: when to snapshot vs evaluate, how to handle dialogs/overlays,
+      efficient step completion patterns, error recovery strategies."""
 
     rollout_analysis = dspy.InputField(
-        desc="Detailed analysis of agent run rollouts. Includes per-step "
-        "breakdown of what the agent did, what worked, what failed, "
-        "wasted tool calls, and missed strategies."
+        desc="Detailed analysis of agent run rollouts including full tool call "
+        "inputs/outputs, agent reasoning, errors encountered, and efficiency "
+        "metrics. Use this to identify PATTERNS of failure, not specific answers."
     )
     optimized_prompt = dspy.OutputField(
         desc="An optimized system prompt for the browser automation agent. "
-        "Must directly address the failures identified in the rollout. "
+        "Must directly address failure PATTERNS identified in the rollout. "
+        "Must NOT contain any hardcoded codes, keys, or challenge-specific secrets. "
         "Be concise and actionable -- no filler."
     )
 
@@ -115,11 +124,11 @@ def extract_rollout_steps(transcript_data: list[dict]) -> list[dict]:
                 if isinstance(block, dict):
                     if block.get("type") == "text":
                         text = block.get("text", "")
-                        current_step["agent_text"].append(text[:1000])
+                        current_step["agent_text"].append(text)
                     elif block.get("type") == "tool_use":
                         call = {
                             "tool": block.get("name", ""),
-                            "input": str(block.get("input", ""))[:500],
+                            "input": str(block.get("input", "")),
                         }
                         current_step["tool_calls"].append(call)
 
@@ -128,7 +137,7 @@ def extract_rollout_steps(transcript_data: list[dict]) -> list[dict]:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     result_content = block.get("content", "")
                     if isinstance(result_content, str):
-                        current_step["tool_results"].append(result_content[:1000])
+                        current_step["tool_results"].append(result_content)
 
             # a tool_result batch marks the end of an agent turn
             if current_step["tool_calls"]:
@@ -175,22 +184,24 @@ def analyze_rollout(runs_dir: Path) -> str:
             # classify this turn
             errors = [r for r in step["tool_results"] if "error" in r.lower()]
             successes = [r for r in step["tool_results"] if "error" not in r.lower()]
-            tool_names = [c["tool"] for c in step["tool_calls"]]
-            agent_reasoning = " ".join(step["agent_text"])[:500]
+            agent_reasoning = " ".join(step["agent_text"])
 
             status = "FAIL" if errors else "OK"
-            turn_summary = f"turn {i + 1} [{status}]: tools={tool_names}"
+            parts.append(f"\nturn {i + 1} [{status}]:")
 
             if agent_reasoning.strip():
-                turn_summary += f" | reasoning: {agent_reasoning[:300]}"
+                parts.append(f"  reasoning: {agent_reasoning}")
+
+            for c in step["tool_calls"]:
+                parts.append(f"  call: {c['tool']}({c['input']})")
 
             if errors:
-                turn_summary += f" | errors: {'; '.join(e[:300] for e in errors[:3])}"
+                for e in errors:
+                    parts.append(f"  ERROR: {e}")
 
             if successes:
-                turn_summary += f" | results: {'; '.join(s[:300] for s in successes[:3])}"
-
-            parts.append(turn_summary)
+                for s in successes:
+                    parts.append(f"  result: {s}")
 
     # identify patterns
     all_steps = []
@@ -476,20 +487,24 @@ def analyze_trajectories(
         for i, step in enumerate(steps):
             errors = [r for r in step["tool_results"] if "error" in r.lower()]
             successes = [r for r in step["tool_results"] if "error" not in r.lower()]
-            tool_names = [c["tool"] for c in step["tool_calls"]]
-            agent_reasoning = " ".join(step["agent_text"])[:500]
+            agent_reasoning = " ".join(step["agent_text"])
 
             status = "FAIL" if errors else "OK"
-            turn_summary = f"turn {i + 1} [{status}]: tools={tool_names}"
+            parts.append(f"\nturn {i + 1} [{status}]:")
 
             if agent_reasoning.strip():
-                turn_summary += f" | reasoning: {agent_reasoning[:300]}"
-            if errors:
-                turn_summary += f" | errors: {'; '.join(e[:300] for e in errors[:3])}"
-            if successes:
-                turn_summary += f" | results: {'; '.join(s[:300] for s in successes[:3])}"
+                parts.append(f"  reasoning: {agent_reasoning}")
 
-            parts.append(turn_summary)
+            for c in step["tool_calls"]:
+                parts.append(f"  call: {c['tool']}({c['input']})")
+
+            if errors:
+                for e in errors:
+                    parts.append(f"  ERROR: {e}")
+
+            if successes:
+                for s in successes:
+                    parts.append(f"  result: {s}")
 
     # identify patterns across all transcripts
     all_steps = []

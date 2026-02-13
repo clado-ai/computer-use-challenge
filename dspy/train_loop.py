@@ -46,9 +46,10 @@ DEFAULT_MAX_ITERATIONS = 100
 CONSECUTIVE_CLEARS_TO_ADVANCE = 2
 WINDOW_INCREMENT = 10           # add 10 turns per advancement
 MAX_WINDOW = 150                # max turn budget
-SLIDING_WINDOW_SIZE = 3
+SLIDING_WINDOW_SIZE = 5         # more history for GEPA
 SUBPROCESS_TIMEOUT = 600        # 10 minutes
 MAX_CONSECUTIVE_FAILURES = 3    # stop after this many agent crashes in a row
+DEFAULT_PARALLEL_AGENTS = 3     # run N agents concurrently per iteration
 
 
 # ---- state management ----
@@ -115,20 +116,17 @@ def backup_prompt(prompt_path: Path, iteration: int) -> Path:
 
 # ---- agent runner ----
 
-def run_agent(turn_window: int) -> tuple[int, str]:
-    """Run the agent subprocess with MAX_TURNS set.
+def _run_single_agent(turn_window: int, agent_id: int) -> tuple[int, str]:
+    """Run one agent subprocess with its own browser data dir."""
+    browser_dir = PROJECT_DIR / f".browser-data-{agent_id}"
+    if browser_dir.exists():
+        shutil.rmtree(browser_dir)
 
-    Returns (return_code, stdout+stderr output).
-    """
-    # clean browser data for fresh state
-    if BROWSER_DATA_DIR.exists():
-        shutil.rmtree(BROWSER_DATA_DIR)
-
-    env = {**os.environ, "MAX_TURNS": str(turn_window)}
-
-    print(f"\n{'='*60}")
-    print(f"RUNNING AGENT: MAX_TURNS={turn_window}")
-    print(f"{'='*60}\n")
+    env = {
+        **os.environ,
+        "MAX_TURNS": str(turn_window),
+        "BROWSER_DATA_DIR": str(browser_dir),
+    }
 
     try:
         result = subprocess.run(
@@ -140,14 +138,43 @@ def run_agent(turn_window: int) -> tuple[int, str]:
             timeout=SUBPROCESS_TIMEOUT,
         )
         output = result.stdout + "\n" + result.stderr
-        print(output[-2000:])  # tail of output
         return result.returncode, output
     except subprocess.TimeoutExpired:
-        print(f"[train_loop] agent timed out after {SUBPROCESS_TIMEOUT}s")
         return -1, "TIMEOUT"
     except Exception as e:
-        print(f"[train_loop] agent failed: {e}")
         return -1, str(e)
+    finally:
+        # cleanup browser data
+        if browser_dir.exists():
+            shutil.rmtree(browser_dir, ignore_errors=True)
+
+
+def run_agents_parallel(turn_window: int, n_agents: int) -> list[tuple[int, str]]:
+    """Run N agents concurrently, each with isolated browser state."""
+    import concurrent.futures
+
+    # also clean the default browser data dir
+    if BROWSER_DATA_DIR.exists():
+        shutil.rmtree(BROWSER_DATA_DIR)
+
+    print(f"\n{'='*60}")
+    print(f"RUNNING {n_agents} AGENTS: MAX_TURNS={turn_window}")
+    print(f"{'='*60}\n")
+
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n_agents) as executor:
+        futures = {
+            executor.submit(_run_single_agent, turn_window, i): i
+            for i in range(n_agents)
+        }
+        for future in concurrent.futures.as_completed(futures):
+            agent_id = futures[future]
+            rc, output = future.result()
+            print(f"[agent-{agent_id}] done (rc={rc})")
+            print(output[-1000:])
+            results.append((rc, output))
+
+    return results
 
 
 # ---- metrics parsing ----
@@ -220,8 +247,8 @@ def get_sliding_window(history: list[dict], size: int = SLIDING_WINDOW_SIZE) -> 
 
 # ---- iteration ----
 
-def run_iteration(state: dict) -> dict:
-    """Run one full training iteration.
+def run_iteration(state: dict, n_agents: int = DEFAULT_PARALLEL_AGENTS) -> dict:
+    """Run one full training iteration with N parallel agents.
 
     Returns the updated state dict.
     """
@@ -229,7 +256,7 @@ def run_iteration(state: dict) -> dict:
     turn_window = state["turn_window"]
 
     print(f"\n{'#'*60}")
-    print(f"# ITERATION {iteration} | budget={turn_window} turns")
+    print(f"# ITERATION {iteration} | budget={turn_window} turns | {n_agents} agents")
     print(f"# consecutive_clears={state['consecutive_clears']} | total_cost=${state['total_cost']:.2f}")
     print(f"{'#'*60}")
 
@@ -238,44 +265,77 @@ def run_iteration(state: dict) -> dict:
     if SYSTEM_PROMPT_PATH.exists():
         previous_prompt = SYSTEM_PROMPT_PATH.read_text()
 
-    # 2. run the agent
+    # 2. run N agents in parallel
     files_before = get_run_files_before(RUNS_DIR)
-    return_code, agent_output = run_agent(turn_window)
+    agent_results = run_agents_parallel(turn_window, n_agents)
 
-    # 3. find new files
-    run_file, transcript_file = find_new_files(RUNS_DIR, files_before)
+    # 3. find ALL new files (multiple run/transcript pairs)
+    new_run_files = []
+    new_transcript_files = []
+    if RUNS_DIR.exists():
+        for f in sorted(RUNS_DIR.iterdir(), reverse=True):
+            if f.name not in files_before:
+                if f.name.startswith("run_") and f.suffix == ".json":
+                    new_run_files.append(f)
+                elif f.name.startswith("transcript_") and f.suffix == ".json":
+                    new_transcript_files.append(f)
 
-    if not run_file:
-        print("[train_loop] WARNING: no run file found, agent may have crashed")
-        steps_completed = 0
-        run_metrics = {"stepsCompleted": 0, "totalCost": 0, "totalApiCalls": 0, "totalToolCalls": 0}
+    if not new_run_files:
+        print("[train_loop] WARNING: no run files found, agents may have crashed")
         state["consecutive_failures"] = state.get("consecutive_failures", 0) + 1
     else:
-        run_metrics = read_metrics(run_file)
-        steps_completed = run_metrics.get("stepsCompleted", 0)
-        state["consecutive_failures"] = 0  # reset on successful run
+        state["consecutive_failures"] = 0
 
-    agent_cost = extract_cost(run_metrics)
-    turns_used = run_metrics.get("totalApiCalls", 0)
-    tool_calls = run_metrics.get("totalToolCalls", 0)
-    print(f"\n[train_loop] steps={steps_completed}, turns={turns_used}/{turn_window}, "
-          f"tools={tool_calls}, cost=${agent_cost:.2f}")
+    # aggregate metrics across all agents
+    total_agent_cost = 0.0
+    total_turns = 0
+    total_tools = 0
+    best_steps = 0
+    all_run_metrics = []
 
-    # 4. record in history
-    history_entry = {
-        "iteration": iteration,
-        "run_file": str(run_file) if run_file else None,
-        "transcript_file": str(transcript_file) if transcript_file else None,
-        "steps_completed": steps_completed,
-        "turn_window": turn_window,
-        "turns_used": turns_used,
-        "tool_calls": tool_calls,
-    }
-    state["trajectory_history"].append(history_entry)
+    for rf in new_run_files:
+        m = read_metrics(rf)
+        all_run_metrics.append(m)
+        total_agent_cost += extract_cost(m)
+        total_turns += m.get("totalApiCalls", 0)
+        total_tools += m.get("totalToolCalls", 0)
+        best_steps = max(best_steps, m.get("stepsCompleted", 0))
 
-    # 5. curriculum check
+    print(f"\n[train_loop] {len(new_run_files)} agents completed:")
+    for i, m in enumerate(all_run_metrics):
+        print(f"  agent-{i}: steps={m.get('stepsCompleted', 0)}, "
+              f"turns={m.get('totalApiCalls', 0)}, cost=${extract_cost(m):.2f}")
+    print(f"  best_steps={best_steps}, total_cost=${total_agent_cost:.2f}")
+
+    # 4. record ALL runs in history
+    for rf, tf in zip(new_run_files, new_transcript_files):
+        m = read_metrics(rf)
+        history_entry = {
+            "iteration": iteration,
+            "run_file": str(rf),
+            "transcript_file": str(tf),
+            "steps_completed": m.get("stepsCompleted", 0),
+            "turn_window": turn_window,
+            "turns_used": m.get("totalApiCalls", 0),
+            "tool_calls": m.get("totalToolCalls", 0),
+        }
+        state["trajectory_history"].append(history_entry)
+
+    # handle case where no files were produced
+    if not new_run_files:
+        state["trajectory_history"].append({
+            "iteration": iteration,
+            "run_file": None,
+            "transcript_file": None,
+            "steps_completed": 0,
+            "turn_window": turn_window,
+            "turns_used": 0,
+            "tool_calls": 0,
+        })
+
+    # 5. curriculum check (based on best agent)
     new_window, new_consecutive, advanced = check_curriculum(
-        steps_completed, turn_window, state["consecutive_clears"]
+        best_steps, turn_window, state["consecutive_clears"]
     )
 
     # 6. get sliding window of trajectories for optimization
@@ -316,25 +376,15 @@ def run_iteration(state: dict) -> dict:
 
     # 9. save iteration JSON
     ITERATIONS_DIR.mkdir(parents=True, exist_ok=True)
-    total_iter_cost = agent_cost + optimization_cost
-
-    # read transcript data for the iteration JSON
-    transcript_data = []
-    if transcript_file and Path(transcript_file).exists():
-        try:
-            transcript_data = json.loads(Path(transcript_file).read_text())
-        except Exception:
-            pass
+    total_iter_cost = total_agent_cost + optimization_cost
 
     iteration_data = {
         "iteration": iteration,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "turn_window": turn_window,
-        "turns_used": turns_used,
-        "tool_calls": tool_calls,
-        "steps_completed": steps_completed,
-        "run_metrics": run_metrics,
-        "transcript": transcript_data,
+        "n_agents": len(new_run_files),
+        "best_steps": best_steps,
+        "all_run_metrics": all_run_metrics,
         "rollout_analysis": rollout_analysis,
         "judge_feedback": judge_feedback,
         "previous_prompt": previous_prompt,
@@ -345,7 +395,7 @@ def run_iteration(state: dict) -> dict:
             "next_window": new_window,
         },
         "cost": {
-            "agent_cost": round(agent_cost, 4),
+            "agent_cost": round(total_agent_cost, 4),
             "optimization_cost": round(optimization_cost, 4),
             "total": round(total_iter_cost, 4),
         },
@@ -365,8 +415,8 @@ def run_iteration(state: dict) -> dict:
 
     # summary
     print(f"\n--- iteration {iteration} summary ---")
-    print(f"  steps: {steps_completed} | turns: {turns_used}/{turn_window} | tools: {tool_calls}")
-    print(f"  cost: ${total_iter_cost:.2f} (agent=${agent_cost:.2f} + opt=${optimization_cost:.2f})")
+    print(f"  agents: {len(new_run_files)} | best_steps: {best_steps} | turns: {total_turns}/{turn_window} | tools: {total_tools}")
+    print(f"  cost: ${total_iter_cost:.2f} (agent=${total_agent_cost:.2f} + opt=${optimization_cost:.2f})")
     print(f"  curriculum: clears={new_consecutive}, advanced={advanced}, next_window={new_window}")
     print(f"  total_cost: ${state['total_cost']:.2f}")
 
@@ -390,6 +440,10 @@ def main() -> None:
     parser.add_argument(
         "--max-iterations", type=int, default=DEFAULT_MAX_ITERATIONS,
         help=f"Maximum number of iterations (default: {DEFAULT_MAX_ITERATIONS})",
+    )
+    parser.add_argument(
+        "--parallel-agents", type=int, default=DEFAULT_PARALLEL_AGENTS,
+        help=f"Number of parallel agents per iteration (default: {DEFAULT_PARALLEL_AGENTS})",
     )
     args = parser.parse_args()
 
@@ -425,7 +479,7 @@ def main() -> None:
             break
 
         try:
-            state = run_iteration(state)
+            state = run_iteration(state, n_agents=args.parallel_agents)
         except KeyboardInterrupt:
             print("\n[train_loop] interrupted, saving state...")
             save_state(state)

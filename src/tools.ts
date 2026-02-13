@@ -2,7 +2,6 @@ import {
   chromium,
   type BrowserContext,
   type Page,
-  type ElementHandle,
 } from "playwright";
 import type OpenAI from "openai";
 import * as path from "node:path";
@@ -77,19 +76,6 @@ async function ensurePage(): Promise<Page> {
   return currentPage;
 }
 
-const SNAPSHOT_SCRIPT_PATH = path.resolve(
-  import.meta.dir,
-  "../../dev-browser/skills/dev-browser/src/snapshot/browser-script.ts",
-);
-
-let snapshotScriptCache: string | null = null;
-async function getSnapshotScript(): Promise<string> {
-  if (snapshotScriptCache) return snapshotScriptCache;
-  const mod = await import(SNAPSHOT_SCRIPT_PATH);
-  snapshotScriptCache = mod.getSnapshotScript() as string;
-  return snapshotScriptCache;
-}
-
 export const toolDefinitions: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
@@ -103,47 +89,6 @@ export const toolDefinitions: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           url: { type: "string", description: "The URL to navigate to" },
         },
         required: ["url"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "browser_snapshot",
-      description:
-        "Get an ARIA accessibility snapshot of the current page. Returns a YAML tree with interactive elements labeled [ref=eN]. Use these refs with browser_action.",
-      parameters: {
-        type: "object",
-        properties: {},
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "browser_action",
-      description:
-        'Perform an action on the page. Actions: "click" (click element by ref), "type" (type text into element by ref), "select" (select option by ref), "press" (press a key like Enter, Tab, Escape), "scroll" (scroll by ref or page). Use refs from browser_snapshot.',
-      parameters: {
-        type: "object",
-        properties: {
-          action: {
-            type: "string",
-            enum: ["click", "type", "select", "press", "scroll"],
-            description: "The action to perform",
-          },
-          ref: {
-            type: "string",
-            description:
-              "Element ref from snapshot (e.g. 'e5'). Required for click, type, select.",
-          },
-          value: {
-            type: "string",
-            description:
-              "Text to type, option to select, key to press, or scroll direction (up/down).",
-          },
-        },
-        required: ["action"],
       },
     },
   },
@@ -177,14 +122,6 @@ async function executeToolInner(
   switch (name) {
     case "browser_navigate":
       return await toolNavigate(input.url as string);
-    case "browser_snapshot":
-      return await toolSnapshot();
-    case "browser_action":
-      return await toolAction(
-        input.action as string,
-        input.ref as string | undefined,
-        input.value as string | undefined,
-      );
     case "browser_evaluate":
       return await toolEvaluate(input.script as string);
     default:
@@ -235,68 +172,6 @@ async function toolNavigate(url: string): Promise<string> {
   return `navigated to: ${currentUrl}\ntitle: ${title}`;
 }
 
-async function toolSnapshot(): Promise<string> {
-  const page = await ensurePage();
-
-  const script = await getSnapshotScript();
-  const snapshot = await page.evaluate((s: string) => {
-    // biome-ignore lint/suspicious/noExplicitAny: browser globalThis has dynamic properties
-    const w = globalThis as any;
-    if (!w.__devBrowser_getAISnapshot) {
-      // biome-ignore lint/security/noGlobalEval: injecting snapshot script into browser context
-      eval(s);
-    }
-    return w.__devBrowser_getAISnapshot();
-  }, script);
-
-  return snapshot as string;
-}
-
-async function toolAction(
-  action: string,
-  ref?: string,
-  value?: string,
-): Promise<string> {
-  const page = await ensurePage();
-
-  if (action === "press") {
-    await page.keyboard.press(value || "Enter");
-    return `pressed: ${value || "Enter"}`;
-  }
-
-  if (action === "scroll") {
-    if (ref) {
-      const el = await resolveRef(page, ref);
-      if (el) {
-        await el.scrollIntoViewIfNeeded();
-        return `scrolled to ref ${ref}`;
-      }
-    }
-    const direction = value === "up" ? -500 : 500;
-    await page.mouse.wheel(0, direction);
-    return `scrolled ${value || "down"}`;
-  }
-
-  if (!ref) return "error: ref is required for click/type/select actions";
-
-  const el = await resolveRef(page, ref);
-  if (!el) return `error: ref ${ref} not found. take a new snapshot.`;
-
-  switch (action) {
-    case "click":
-      await el.click({ force: true });
-      return `clicked ref ${ref}`;
-    case "type":
-      await el.fill(value || "");
-      return `typed "${value}" into ref ${ref}`;
-    case "select":
-      await el.selectOption(value || "");
-      return `selected "${value}" in ref ${ref}`;
-    default:
-      return `unknown action: ${action}`;
-  }
-}
-
 async function toolEvaluate(script: string): Promise<string> {
   const page = await ensurePage();
   try {
@@ -327,26 +202,6 @@ async function toolEvaluate(script: string): Promise<string> {
 
     return `error: evaluate: ${msg}`;
   }
-}
-
-async function resolveRef(
-  page: Page,
-  ref: string,
-): Promise<ElementHandle | null> {
-  const handle = await page.evaluateHandle((r: string) => {
-    // biome-ignore lint/suspicious/noExplicitAny: browser globalThis has dynamic properties
-    const w = globalThis as any;
-    const refs = w.__devBrowserRefs;
-    if (!refs) return null;
-    return refs[r] || null;
-  }, ref);
-
-  const el = handle.asElement();
-  if (!el) {
-    await handle.dispose();
-    return null;
-  }
-  return el;
 }
 
 // cleanup

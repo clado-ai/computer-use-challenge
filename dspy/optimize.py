@@ -1,8 +1,8 @@
 """
 DSPy GEPA prompt optimizer for the browser automation agent.
 
-Analyzes run transcripts and optimizes the system prompt using
-Opus 4.6 as a judge. Follows the pattern from dspy-clay.
+Opus 4.6 as judge: analyzes actual run rollouts, summarizes what went
+right and wrong, scores whether the proposed prompt addresses failures.
 
 Usage:
     uv run optimize.py --optimize          # run GEPA optimization
@@ -51,14 +51,15 @@ class BrowserAgentPromptSignature(dspy.Signature):
     the agent to be efficient (minimize tool calls), handle JS dialogs,
     inspect DOM for hidden information, and act decisively."""
 
-    run_analysis = dspy.InputField(
-        desc="Analysis of agent run transcripts including: steps completed, "
-        "common failure patterns, wasted tool calls, and successful strategies."
+    rollout_analysis = dspy.InputField(
+        desc="Detailed analysis of agent run rollouts. Includes per-step "
+        "breakdown of what the agent did, what worked, what failed, "
+        "wasted tool calls, and missed strategies."
     )
     optimized_prompt = dspy.OutputField(
         desc="An optimized system prompt for the browser automation agent. "
-        "Should be concise, actionable, and cover dialog handling, DOM inspection, "
-        "common challenge patterns, and efficiency rules."
+        "Must directly address the failures identified in the rollout. "
+        "Be concise and actionable -- no filler."
     )
 
 
@@ -67,12 +68,12 @@ class PromptGenerator(dspy.Module):
         super().__init__()
         self.generate = dspy.Predict(BrowserAgentPromptSignature)
 
-    def forward(self, run_analysis: str) -> dspy.Prediction:
-        result = self.generate(run_analysis=run_analysis)
+    def forward(self, rollout_analysis: str) -> dspy.Prediction:
+        result = self.generate(rollout_analysis=rollout_analysis)
         return dspy.Prediction(optimized_prompt=result.optimized_prompt.strip())
 
 
-# ---- transcript analysis ----
+# ---- rollout analysis ----
 
 def load_run_transcripts(runs_dir: Path, limit: int = 5) -> list[dict]:
     """load the most recent run transcripts."""
@@ -100,64 +101,186 @@ def load_run_metrics(runs_dir: Path, limit: int = 5) -> list[dict]:
     return metrics
 
 
-def analyze_runs(runs_dir: Path) -> str:
-    """analyze run transcripts and metrics into a summary for the optimizer."""
+def extract_rollout_steps(transcript_data: list[dict]) -> list[dict]:
+    """extract a per-step summary from a raw transcript."""
+    steps = []
+    current_step = {"agent_text": [], "tool_calls": [], "tool_results": []}
+
+    for msg in transcript_data:
+        content = msg.get("content", "")
+        role = msg.get("role", "")
+
+        if role == "assistant" and isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    if block.get("type") == "text":
+                        text = block.get("text", "")
+                        current_step["agent_text"].append(text[:300])
+                    elif block.get("type") == "tool_use":
+                        call = {
+                            "tool": block.get("name", ""),
+                            "input": str(block.get("input", ""))[:200],
+                        }
+                        current_step["tool_calls"].append(call)
+
+        elif role == "user" and isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    result_content = block.get("content", "")
+                    if isinstance(result_content, str):
+                        current_step["tool_results"].append(result_content[:300])
+
+            # a tool_result batch marks the end of an agent turn
+            if current_step["tool_calls"]:
+                steps.append(current_step)
+                current_step = {"agent_text": [], "tool_calls": [], "tool_results": []}
+
+    # capture last step
+    if current_step["tool_calls"]:
+        steps.append(current_step)
+
+    return steps
+
+
+def analyze_rollout(runs_dir: Path) -> str:
+    """build a detailed rollout analysis from run data.
+
+    this is what the judge and the generator both see -- it describes
+    what actually happened in each step of the agent's run.
+    """
     metrics = load_run_metrics(runs_dir)
     transcripts = load_run_transcripts(runs_dir)
 
-    if not metrics:
-        return "no run data available. use default optimization based on challenge type."
+    if not metrics and not transcripts:
+        return _synthetic_rollout()
 
-    analyses = []
+    parts = []
+
+    # overall stats
     for m in metrics:
-        analysis = (
-            f"run: steps={m.get('stepsCompleted', '?')}/30, "
-            f"time={m.get('agentDurationMs', 0) / 1000:.1f}s, "
-            f"api_calls={m.get('totalApiCalls', '?')}, "
-            f"tool_calls={m.get('totalToolCalls', '?')}, "
-            f"cost=${m.get('totalCost', '?')}"
-        )
-        analyses.append(analysis)
-
-    # extract common patterns from transcripts
-    failure_patterns = []
-    success_patterns = []
-
-    for t in transcripts:
-        for msg in t.get("data", []):
-            content = msg.get("content", "")
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict):
-                        text = block.get("text", "") or block.get("content", "")
-                        if isinstance(text, str):
-                            if "error" in text.lower() or "not found" in text.lower():
-                                failure_patterns.append(text[:200])
-                            elif "clicked" in text.lower() or "typed" in text.lower():
-                                success_patterns.append(text[:200])
-            elif isinstance(content, str):
-                if "error" in content.lower():
-                    failure_patterns.append(content[:200])
-
-    summary = "RUN SUMMARIES:\n" + "\n".join(analyses)
-
-    if failure_patterns:
-        unique_failures = list(set(failure_patterns))[:10]
-        summary += "\n\nCOMMON FAILURES:\n" + "\n".join(f"- {f}" for f in unique_failures)
-
-    if success_patterns:
-        unique_successes = list(set(success_patterns))[:10]
-        summary += "\n\nSUCCESSFUL PATTERNS:\n" + "\n".join(
-            f"- {s}" for s in unique_successes
+        parts.append(
+            f"RUN: {m.get('stepsCompleted', '?')}/30 steps, "
+            f"{m.get('agentDurationMs', 0) / 1000:.1f}s, "
+            f"{m.get('totalApiCalls', '?')} api calls, "
+            f"{m.get('totalToolCalls', '?')} tool calls, "
+            f"${m.get('totalCost', '?')}"
         )
 
-    return summary
+    # per-step breakdown from transcripts
+    for t in transcripts[:2]:  # analyze up to 2 most recent runs
+        steps = extract_rollout_steps(t.get("data", []))
+        parts.append(f"\n--- rollout from {t['file']} ({len(steps)} turns) ---")
+
+        for i, step in enumerate(steps):
+            # classify this turn
+            errors = [r for r in step["tool_results"] if "error" in r.lower()]
+            successes = [r for r in step["tool_results"] if "error" not in r.lower()]
+            tool_names = [c["tool"] for c in step["tool_calls"]]
+            agent_reasoning = " ".join(step["agent_text"])[:200]
+
+            status = "FAIL" if errors else "OK"
+            turn_summary = f"turn {i + 1} [{status}]: tools={tool_names}"
+
+            if agent_reasoning.strip():
+                turn_summary += f" | reasoning: {agent_reasoning[:100]}"
+
+            if errors:
+                turn_summary += f" | errors: {'; '.join(e[:100] for e in errors[:2])}"
+
+            if successes:
+                turn_summary += f" | results: {'; '.join(s[:80] for s in successes[:2])}"
+
+            parts.append(turn_summary)
+
+    # identify patterns
+    all_steps = []
+    for t in transcripts[:2]:
+        all_steps.extend(extract_rollout_steps(t.get("data", [])))
+
+    if all_steps:
+        # wasted calls: same tool called multiple times in sequence with errors
+        wasted = []
+        for step in all_steps:
+            errors = [r for r in step["tool_results"] if "error" in r.lower()]
+            if len(errors) > 1:
+                wasted.append(
+                    f"  - {len(errors)} errors in one turn: "
+                    f"{[c['tool'] for c in step['tool_calls']]}"
+                )
+
+        if wasted:
+            parts.append("\nWASTED CALLS (multiple errors per turn):")
+            parts.extend(wasted[:5])
+
+        # tool usage distribution
+        tool_counts: dict[str, int] = {}
+        error_counts: dict[str, int] = {}
+        for step in all_steps:
+            for call in step["tool_calls"]:
+                tool_counts[call["tool"]] = tool_counts.get(call["tool"], 0) + 1
+            for r in step["tool_results"]:
+                if "error" in r.lower():
+                    # attribute to first tool in the turn
+                    if step["tool_calls"]:
+                        t_name = step["tool_calls"][0]["tool"]
+                        error_counts[t_name] = error_counts.get(t_name, 0) + 1
+
+        parts.append("\nTOOL USAGE:")
+        for tool, count in sorted(tool_counts.items(), key=lambda x: -x[1]):
+            err = error_counts.get(tool, 0)
+            parts.append(f"  {tool}: {count} calls, {err} errors")
+
+    return "\n".join(parts)
 
 
-# ---- metric (judge) ----
+def _synthetic_rollout() -> str:
+    """synthetic rollout for when no real data exists yet."""
+    return """RUN: 15/30 steps, 180.0s, 45 api calls, 60 tool calls, $3.50
+RUN: 22/30 steps, 240.0s, 55 api calls, 80 tool calls, $4.20
 
-def make_metric(judge_lm: dspy.LM) -> Callable:
-    """create a metric that uses opus 4.6 to judge prompt quality."""
+--- synthetic rollout ---
+turn 1 [OK]: tools=['browser_navigate'] | results: navigated to challenge url
+turn 2 [OK]: tools=['browser_evaluate'] | results: suppressed dialogs
+turn 3 [OK]: tools=['browser_snapshot'] | results: aria tree with step 1
+turn 4 [OK]: tools=['browser_action'] | results: clicked start button
+turn 5 [FAIL]: tools=['browser_snapshot', 'browser_action'] | errors: ref e5 not found. take a new snapshot.
+turn 6 [OK]: tools=['browser_snapshot', 'browser_action'] | results: clicked correct button after re-snapshot
+turn 7 [FAIL]: tools=['browser_action', 'browser_action', 'browser_action'] | errors: dialog blocked interaction; dialog blocked interaction; dialog blocked interaction
+turn 8 [OK]: tools=['browser_evaluate'] | results: dismissed dialog via js, suppressed future dialogs
+turn 9 [FAIL]: tools=['browser_snapshot', 'browser_action'] | errors: element not interactable (hidden behind overlay)
+turn 10 [OK]: tools=['browser_evaluate'] | results: read hidden text via getComputedStyle, found answer code
+turn 11 [FAIL]: tools=['browser_snapshot', 'browser_snapshot', 'browser_snapshot'] | errors: agent took 3 snapshots without acting (wasted calls)
+turn 12 [FAIL]: tools=['browser_action'] | errors: drag and drop failed with simple click
+
+WASTED CALLS:
+  - 3 errors in one turn: ['browser_action', 'browser_action', 'browser_action'] (dialog blocking)
+  - 3 snapshots without action (indecisive)
+  - drag/drop attempted with click instead of JS events
+
+TOOL USAGE:
+  browser_snapshot: 25 calls, 3 errors
+  browser_action: 20 calls, 6 errors
+  browser_evaluate: 10 calls, 0 errors
+  browser_navigate: 5 calls, 0 errors
+
+KEY FAILURES:
+- stale refs after page transitions (need re-snapshot before action)
+- dialogs blocking actions (need to suppress earlier and more aggressively)
+- hidden elements not found via snapshot alone (need evaluate for CSS tricks)
+- drag-and-drop not working via click (need JS dispatchEvent)
+- agent being indecisive (multiple snapshots without acting)"""
+
+
+# ---- metric (judge analyzes rollout) ----
+
+def make_metric(judge_lm: dspy.LM, rollout: str) -> Callable:
+    """create a metric where opus 4.6 judges the prompt against the actual rollout.
+
+    the judge sees:
+    1. the rollout (what happened)
+    2. the proposed prompt (what the agent would be told)
+    and evaluates whether the prompt would fix the observed failures.
+    """
 
     def metric(
         gold: dspy.Example,
@@ -167,39 +290,86 @@ def make_metric(judge_lm: dspy.LM) -> Callable:
     ) -> dspy.Prediction:
         prompt = pred.optimized_prompt
 
-        # score the prompt on key criteria
-        judge_prompt = f"""Rate this browser automation system prompt on a scale of 0-1.
-Score based on these criteria:
-1. EFFICIENCY (0.3 weight): Does it minimize tool calls? Does it encourage 1-shot solutions?
-2. COMPLETENESS (0.3 weight): Does it cover dialog handling, DOM inspection, hidden elements, common patterns?
-3. CONCISENESS (0.2 weight): Is it focused and not verbose? Does it avoid unnecessary detail?
-4. ACTIONABILITY (0.2 weight): Are instructions clear and specific? Can the agent follow them without ambiguity?
+        judge_prompt = f"""You are evaluating a system prompt for a browser automation agent.
 
-System prompt to evaluate:
+ACTUAL ROLLOUT (what happened when the agent ran):
 ---
-{prompt}
+{rollout[:3000]}
 ---
 
-Respond with JSON: {{"score": 0.0-1.0, "feedback": "detailed feedback on strengths and weaknesses"}}"""
+PROPOSED SYSTEM PROMPT (what the agent would be told next time):
+---
+{prompt[:3000]}
+---
+
+Analyze:
+1. WHAT WENT WRONG in the rollout? List the top 3-5 failures.
+2. WHAT WENT RIGHT? List the top 3 successes.
+3. Does the proposed prompt DIRECTLY ADDRESS each failure? For each failure, say YES/NO and why.
+4. Does the prompt introduce any BAD ADVICE that could cause new failures?
+5. Is the prompt CONCISE enough? (verbose prompts waste tokens and confuse the agent)
+
+Score 0.0-1.0 where:
+- 1.0 = prompt fixes all observed failures without introducing new problems
+- 0.7 = prompt fixes most failures
+- 0.5 = prompt is generic and doesn't specifically address rollout failures
+- 0.3 = prompt misses critical failures or adds bad advice
+- 0.0 = prompt would make things worse
+
+Respond with JSON:
+{{
+  "what_went_wrong": ["failure1", "failure2", ...],
+  "what_went_right": ["success1", "success2", ...],
+  "failure_coverage": {{"failure1": "YES/NO - reason", ...}},
+  "bad_advice": ["any problematic instructions"],
+  "score": 0.0-1.0,
+  "feedback": "concrete summary of what to improve in the prompt"
+}}"""
 
         with dspy.context(lm=judge_lm):
             judge_response = dspy.Predict("prompt -> evaluation")(prompt=judge_prompt)
 
         try:
-            # parse json from response
             eval_text = judge_response.evaluation
-            # try to extract json
             if "{" in eval_text:
                 json_str = eval_text[eval_text.index("{") : eval_text.rindex("}") + 1]
                 result = json.loads(json_str)
                 score = float(result.get("score", 0.5))
-                feedback = result.get("feedback", "no feedback")
+
+                # build rich feedback from the analysis
+                feedback_parts = []
+
+                wrong = result.get("what_went_wrong", [])
+                if wrong:
+                    feedback_parts.append("FAILURES: " + "; ".join(wrong[:5]))
+
+                right = result.get("what_went_right", [])
+                if right:
+                    feedback_parts.append("SUCCESSES: " + "; ".join(right[:3]))
+
+                coverage = result.get("failure_coverage", {})
+                uncovered = [
+                    k for k, v in coverage.items()
+                    if isinstance(v, str) and v.upper().startswith("NO")
+                ]
+                if uncovered:
+                    feedback_parts.append("UNCOVERED FAILURES: " + "; ".join(uncovered))
+
+                bad = result.get("bad_advice", [])
+                if bad:
+                    feedback_parts.append("BAD ADVICE TO REMOVE: " + "; ".join(bad))
+
+                summary = result.get("feedback", "")
+                if summary:
+                    feedback_parts.append("SUMMARY: " + summary)
+
+                feedback = "\n".join(feedback_parts) if feedback_parts else summary
             else:
                 score = 0.5
                 feedback = eval_text
-        except Exception:
+        except Exception as e:
             score = 0.5
-            feedback = "failed to parse judge response"
+            feedback = f"failed to parse judge response: {e}"
 
         return dspy.Prediction(score=score, feedback=feedback)
 
@@ -208,38 +378,14 @@ Respond with JSON: {{"score": 0.0-1.0, "feedback": "detailed feedback on strengt
 
 # ---- training data ----
 
-def build_trainset(runs_dir: Path) -> list[dspy.Example]:
-    """build training examples from run analyses."""
-    analysis = analyze_runs(runs_dir)
-
-    # create variations of the analysis for training diversity
+def build_trainset(rollout: str) -> list[dspy.Example]:
+    """build training examples from the rollout analysis."""
     examples = []
     for i in range(5):
         example = dspy.Example(
-            run_analysis=f"[variation {i + 1}]\n{analysis}",
-        ).with_inputs("run_analysis")
+            rollout_analysis=rollout,
+        ).with_inputs("rollout_analysis")
         examples.append(example)
-
-    # if no real data, use a synthetic example
-    if "no run data" in analysis:
-        synthetic = (
-            "RUN SUMMARIES:\n"
-            "run: steps=15/30, time=180s, api_calls=45, tool_calls=60, cost=$3.50\n"
-            "run: steps=22/30, time=240s, api_calls=55, tool_calls=80, cost=$4.20\n\n"
-            "COMMON FAILURES:\n"
-            "- error: ref e5 not found (stale refs after page transition)\n"
-            "- error: dialog blocked page interaction\n"
-            "- agent took 5 snapshots on same step without acting\n\n"
-            "SUCCESSFUL PATTERNS:\n"
-            "- using evaluate to read innerHTML for hidden codes\n"
-            "- suppressing dialogs with window.alert override\n"
-            "- clicking refs immediately after snapshot"
-        )
-        examples = [
-            dspy.Example(run_analysis=synthetic).with_inputs("run_analysis")
-            for _ in range(5)
-        ]
-
     return examples
 
 
@@ -322,15 +468,21 @@ def main() -> None:
         max_tokens=4096,
     )
 
+    # analyze rollouts
+    rollout = analyze_rollout(RUNS_DIR)
+    print("rollout analysis:")
+    print(rollout[:1000])
+    print("...")
+
     program = PromptGenerator()
-    metric = make_metric(judge_lm)
+    metric = make_metric(judge_lm, rollout)
 
     if args.optimize:
-        print("=" * 60)
-        print("GEPA optimization: optimizing browser agent system prompt")
+        print("\n" + "=" * 60)
+        print("GEPA: optimizing prompt based on rollout analysis")
         print("=" * 60)
 
-        trainset = build_trainset(RUNS_DIR)
+        trainset = build_trainset(rollout)
         print(f"training examples: {len(trainset)}")
 
         optimizer = dspy.GEPA(
@@ -350,18 +502,16 @@ def main() -> None:
         prompt_path = save_optimized_prompt(program, PROMPTS_DIR)
 
         if args.apply and prompt_path:
-            # overwrite the system prompt
             optimized = prompt_path.read_text()
             SYSTEM_PROMPT_PATH.write_text(optimized)
             print(f"applied optimized prompt to: {SYSTEM_PROMPT_PATH}")
 
     # test
     print("\n" + "=" * 60)
-    print("TEST: generating optimized prompt")
+    print("TEST: generating prompt from rollout")
     print("=" * 60)
 
-    analysis = analyze_runs(RUNS_DIR)
-    prediction = program(run_analysis=analysis)
+    prediction = program(rollout_analysis=rollout)
     print("\ngenerated prompt:")
     print("-" * 40)
     print(prediction.optimized_prompt[:2000])

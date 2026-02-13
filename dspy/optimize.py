@@ -620,12 +620,11 @@ def run_optimization(
     )
     compiled = optimizer.compile(program, trainset=trainset)
 
-    # extract optimized prompt
-    optimized_prompt = extract_instructions(compiled)
-    if not optimized_prompt:
-        # fallback: run the compiled program to get output
-        prediction = compiled(rollout_analysis=rollout)
-        optimized_prompt = prediction.optimized_prompt
+    # extract optimized prompt by RUNNING the compiled program
+    # (don't use extract_instructions — that returns GEPA's meta-instructions
+    # for the signature, not the actual generated agent prompt)
+    prediction = compiled(rollout_analysis=rollout)
+    optimized_prompt = prediction.optimized_prompt
 
     # collect judge feedback from optimizer stats
     judge_feedback = []

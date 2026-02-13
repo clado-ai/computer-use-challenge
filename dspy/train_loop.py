@@ -436,13 +436,19 @@ def run_iteration(state: dict, n_agents: int = DEFAULT_PARALLEL_AGENTS) -> dict:
     else:
         print("[train_loop] no transcripts available, skipping optimization")
 
-    # 8. backup and write new prompt (always save, even if unchanged)
+    # 8. backup and write new prompt (with safety check)
     backup_prompt(SYSTEM_PROMPT_PATH, iteration)
-    if optimized_prompt:
+    # reject meta-prompts that tell the agent to "generate a prompt" instead of act
+    bad_patterns = ["generate an optimized", "output only the optimized", "format: output"]
+    is_meta_prompt = any(p in optimized_prompt.lower()[:200] for p in bad_patterns)
+    if is_meta_prompt:
+        print(f"[train_loop] WARNING: GEPA returned a meta-prompt, not an agent prompt. Keeping previous SYSTEM.md.")
+        optimized_prompt = previous_prompt
+    if optimized_prompt and optimized_prompt != previous_prompt:
         SYSTEM_PROMPT_PATH.write_text(optimized_prompt)
         print(f"[train_loop] wrote new SYSTEM.md ({len(optimized_prompt)} chars)")
     else:
-        print("[train_loop] no optimized prompt, keeping existing SYSTEM.md")
+        print("[train_loop] keeping existing SYSTEM.md")
 
     # 9. save iteration JSON
     ITERATIONS_DIR.mkdir(parents=True, exist_ok=True)

@@ -148,10 +148,15 @@ export async function runAgent(): Promise<AgentResult> {
     messages.push({ role: "user", content: toolResults });
     transcript.push({ role: "user", content: toolResults });
 
-    // clear context on step transition — keep only the first message (initial prompt)
+    // clear context on step transition — replace with step-aware prompt
     if (stepsCompleted > prevStepsCompleted) {
       console.log(`[context] step ${prevStepsCompleted} → ${stepsCompleted}, clearing context`);
-      messages.splice(1); // remove everything after the first message
+      const nextStep = stepsCompleted + 1;
+      messages.length = 0;
+      messages.push({
+        role: "user",
+        content: `You are on step ${nextStep} of 30. The browser is already open on the challenge page — do NOT use browser_navigate. Take a snapshot and solve this step.`,
+      });
       prevStepsCompleted = stepsCompleted;
     }
   }

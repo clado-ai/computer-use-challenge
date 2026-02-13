@@ -16,8 +16,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import glob as globmod
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -47,18 +49,11 @@ DEFAULT_MAX_ITERATIONS = 100
 CONSECUTIVE_CLEARS_TO_ADVANCE = 2
 STEP_INCREMENT = 2              # add 2 steps per advancement
 MAX_STEPS = 30                  # final goal
-TURNS_PER_STEP = 10             # give 10 turns per target step
-MIN_TURNS = 30                  # minimum turn budget
-MAX_TURNS = 150                 # cap turn budget
+MAX_TURNS = 300                 # safety cap, agent stops on step target not turns
 SLIDING_WINDOW_SIZE = 5         # history for GEPA
-SUBPROCESS_TIMEOUT = 600        # 10 minutes
+SUBPROCESS_TIMEOUT = 3600       # 60 minutes
 MAX_CONSECUTIVE_FAILURES = 3    # stop after this many agent crashes in a row
 DEFAULT_PARALLEL_AGENTS = 5     # run N agents concurrently per iteration
-
-
-def turns_for_target(step_target: int) -> int:
-    """Calculate turn budget from step target."""
-    return min(max(step_target * TURNS_PER_STEP, MIN_TURNS), MAX_TURNS)
 
 
 # ---- state management ----
@@ -123,57 +118,119 @@ def backup_prompt(prompt_path: Path, iteration: int) -> Path:
     return backup_path
 
 
+# ---- cleanup helpers ----
+
+def _kill_process_tree(pid: int) -> None:
+    """Kill a process and all its children via process group."""
+    try:
+        pgid = os.getpgid(pid)
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    # give processes a moment to exit gracefully
+    import time
+    time.sleep(2)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _kill_orphaned_browsers() -> None:
+    """Kill any orphaned Chromium/chromium processes from previous agent runs."""
+    for pattern in ["chromium.*browser-data", "chrome.*browser-data"]:
+        try:
+            subprocess.run(
+                ["pkill", "-f", pattern],
+                capture_output=True, timeout=5,
+            )
+        except Exception:
+            pass
+
+
+def _clean_all_browser_dirs() -> None:
+    """Remove all .browser-data* directories for a clean slate."""
+    # default dir
+    if BROWSER_DATA_DIR.exists():
+        shutil.rmtree(BROWSER_DATA_DIR, ignore_errors=True)
+    # numbered dirs from parallel agents
+    for d in globmod.glob(str(PROJECT_DIR / ".browser-data-*")):
+        shutil.rmtree(d, ignore_errors=True)
+
+
 # ---- agent runner ----
 
-def _run_single_agent(turn_window: int, agent_id: int) -> tuple[int, str]:
-    """Run one agent subprocess with its own browser data dir."""
+def _run_single_agent(step_target: int, agent_id: int) -> tuple[int, str]:
+    """Run one agent subprocess with its own browser data dir.
+
+    Uses process groups so we can kill Chromium grandchild processes on
+    timeout or error.
+    """
     browser_dir = PROJECT_DIR / f".browser-data-{agent_id}"
     if browser_dir.exists():
-        shutil.rmtree(browser_dir)
+        shutil.rmtree(browser_dir, ignore_errors=True)
 
     env = {
         **os.environ,
-        "MAX_TURNS": str(turn_window),
+        "MAX_TURNS": str(MAX_TURNS),
+        "MAX_STEPS": str(step_target),
         "BROWSER_DATA_DIR": str(browser_dir),
     }
 
+    proc = None
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             ["bun", "run", "src/index.ts"],
             cwd=str(PROJECT_DIR),
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=SUBPROCESS_TIMEOUT,
+            start_new_session=True,  # new process group for clean kill
         )
-        output = result.stdout + "\n" + result.stderr
-        return result.returncode, output
+        stdout, stderr = proc.communicate(timeout=SUBPROCESS_TIMEOUT)
+        return proc.returncode, stdout + "\n" + stderr
     except subprocess.TimeoutExpired:
+        if proc:
+            _kill_process_tree(proc.pid)
+            # drain any buffered output
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+                return -1, f"TIMEOUT\n{stdout}\n{stderr}"
+            except Exception:
+                pass
         return -1, "TIMEOUT"
     except Exception as e:
         return -1, str(e)
     finally:
+        # ensure process is dead
+        if proc and proc.poll() is None:
+            _kill_process_tree(proc.pid)
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
         # cleanup browser data
         if browser_dir.exists():
             shutil.rmtree(browser_dir, ignore_errors=True)
 
 
-def run_agents_parallel(turn_window: int, n_agents: int) -> list[tuple[int, str]]:
+def run_agents_parallel(step_target: int, n_agents: int) -> list[tuple[int, str]]:
     """Run N agents concurrently, each with isolated browser state."""
     import concurrent.futures
 
-    # also clean the default browser data dir
-    if BROWSER_DATA_DIR.exists():
-        shutil.rmtree(BROWSER_DATA_DIR)
+    # clean slate: kill orphans and remove all browser data dirs
+    _kill_orphaned_browsers()
+    _clean_all_browser_dirs()
 
     print(f"\n{'='*60}")
-    print(f"RUNNING {n_agents} AGENTS: MAX_TURNS={turn_window}")
+    print(f"RUNNING {n_agents} AGENTS: target={step_target} steps, max_turns={MAX_TURNS}")
     print(f"{'='*60}\n")
 
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=n_agents) as executor:
         futures = {
-            executor.submit(_run_single_agent, turn_window, i): i
+            executor.submit(_run_single_agent, step_target, i): i
             for i in range(n_agents)
         }
         for future in concurrent.futures.as_completed(futures):
@@ -182,6 +239,10 @@ def run_agents_parallel(turn_window: int, n_agents: int) -> list[tuple[int, str]
             print(f"[agent-{agent_id}] done (rc={rc})")
             print(output[-1000:])
             results.append((rc, output))
+
+    # post-run cleanup: kill any lingering browsers, remove dirs
+    _kill_orphaned_browsers()
+    _clean_all_browser_dirs()
 
     return results
 
@@ -263,10 +324,9 @@ def run_iteration(state: dict, n_agents: int = DEFAULT_PARALLEL_AGENTS) -> dict:
     """
     iteration = state["iteration"]
     step_target = state["step_target"]
-    turn_window = turns_for_target(step_target)
 
     print(f"\n{'#'*60}")
-    print(f"# ITERATION {iteration} | target={step_target} steps | {turn_window} turns | {n_agents} agents")
+    print(f"# ITERATION {iteration} | target={step_target} steps | {n_agents} agents")
     print(f"# consecutive_clears={state['consecutive_clears']} | total_cost=${state['total_cost']:.2f}")
     print(f"{'#'*60}")
 
@@ -277,7 +337,7 @@ def run_iteration(state: dict, n_agents: int = DEFAULT_PARALLEL_AGENTS) -> dict:
 
     # 2. run N agents in parallel
     files_before = get_run_files_before(RUNS_DIR)
-    agent_results = run_agents_parallel(turn_window, n_agents)
+    agent_results = run_agents_parallel(step_target, n_agents)
 
     # 3. find ALL new files (multiple run/transcript pairs)
     new_run_files = []
@@ -325,7 +385,7 @@ def run_iteration(state: dict, n_agents: int = DEFAULT_PARALLEL_AGENTS) -> dict:
             "run_file": str(rf),
             "transcript_file": str(tf),
             "steps_completed": m.get("stepsCompleted", 0),
-            "turn_window": turn_window,
+            "step_target": step_target,
             "turns_used": m.get("totalApiCalls", 0),
             "tool_calls": m.get("totalToolCalls", 0),
         }
@@ -338,7 +398,7 @@ def run_iteration(state: dict, n_agents: int = DEFAULT_PARALLEL_AGENTS) -> dict:
             "run_file": None,
             "transcript_file": None,
             "steps_completed": 0,
-            "turn_window": turn_window,
+            "step_target": step_target,
             "turns_used": 0,
             "tool_calls": 0,
         })
@@ -392,7 +452,6 @@ def run_iteration(state: dict, n_agents: int = DEFAULT_PARALLEL_AGENTS) -> dict:
         "iteration": iteration,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "step_target": step_target,
-        "turn_window": turn_window,
         "n_agents": len(new_run_files),
         "best_steps": best_steps,
         "all_run_metrics": all_run_metrics,
@@ -426,7 +485,7 @@ def run_iteration(state: dict, n_agents: int = DEFAULT_PARALLEL_AGENTS) -> dict:
 
     # summary
     print(f"\n--- iteration {iteration} summary ---")
-    print(f"  target: {step_target} steps | best: {best_steps}/{step_target} | turns: {total_turns}/{turn_window} | tools: {total_tools}")
+    print(f"  target: {step_target} steps | best: {best_steps}/{step_target} | turns: {total_turns} | tools: {total_tools}")
     print(f"  cost: ${total_iter_cost:.2f} (agent=${total_agent_cost:.2f} + opt=${optimization_cost:.2f})")
     print(f"  curriculum: clears={new_consecutive}, advanced={advanced}, next_target={new_target}")
     print(f"  total_cost: ${state['total_cost']:.2f}")
@@ -475,13 +534,13 @@ def main() -> None:
     PROMPT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
-    print(f"[train_loop] starting: target={state['step_target']} steps "
-          f"({turns_for_target(state['step_target'])} turns), max_iter={args.max_iterations}")
+    print(f"[train_loop] starting: target={state['step_target']} steps, "
+          f"max_iter={args.max_iterations}")
 
     while state["iteration"] < args.max_iterations:
-        # target cap
+        # done if target reached 30
         if state["step_target"] > MAX_STEPS:
-            print(f"\n[train_loop] MAX STEPS reached: {state['step_target']} steps")
+            print(f"\n[train_loop] ALL 30 STEPS mastered!")
             break
 
         # consecutive failure guard
@@ -506,7 +565,7 @@ def main() -> None:
     print(f"\n{'='*60}")
     print(f"TRAINING COMPLETE")
     print(f"  iterations: {state['iteration']}")
-    print(f"  final target: {state['step_target']} steps ({turns_for_target(state['step_target'])} turns)")
+    print(f"  final target: {state['step_target']} steps")
     print(f"  total cost: ${state['total_cost']:.2f}")
     print(f"{'='*60}")
 

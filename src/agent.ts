@@ -7,7 +7,8 @@ import * as path from "node:path";
 const MODEL = "claude-opus-4-6";
 const MAX_TOKENS = 8192;
 const CHALLENGE_URL = "https://serene-frangipane-7fd25b.netlify.app";
-const MAX_TURNS = parseInt(process.env.MAX_TURNS || "150", 10);
+const MAX_TURNS = parseInt(process.env.MAX_TURNS || "300", 10);
+const MAX_STEPS = parseInt(process.env.MAX_STEPS || "30", 10);
 
 // load system prompt
 const systemPromptPath = path.join(import.meta.dir, "prompts", "SYSTEM.md");
@@ -35,7 +36,7 @@ export async function runAgent(): Promise<AgentResult> {
   let turnCount = 0;
 
   metrics.startAgent();
-  console.log(`starting agent with ${MODEL} (max turns: ${MAX_TURNS})...`);
+  console.log(`starting agent with ${MODEL} (max turns: ${MAX_TURNS}, target steps: ${MAX_STEPS})...`);
   console.log(`challenge: ${CHALLENGE_URL}\n`);
 
   while (turnCount < MAX_TURNS) {
@@ -129,6 +130,12 @@ export async function runAgent(): Promise<AgentResult> {
           stepsCompleted = stepNum;
         }
       }
+    }
+
+    // check if we hit step target
+    if (stepsCompleted >= MAX_STEPS) {
+      console.log(`\n[agent] reached step target (${stepsCompleted}/${MAX_STEPS}), stopping.`);
+      break;
     }
 
     messages.push({ role: "assistant", content: response.content });

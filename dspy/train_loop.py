@@ -1,9 +1,8 @@
 """
 Iterative prompt optimization training loop with step + model curriculum.
 
-Step curriculum: starts at target=2 steps, advances by 5 after clearing.
-Model curriculum: cycles through models, resetting step target for each.
-Turn budget scales from 30 to 150 with diminishing increases (power curve).
+Step curriculum: 10 → 20 → 30, then 30 forever.
+Turn budget: ~5 turns per step target (50/100/150).
 
 Two optimizers:
   - Direct LLM optimizer (every iteration): single LLM call via optimize.py
@@ -43,7 +42,7 @@ BROWSER_DATA_DIR = PROJECT_DIR / ".browser-data"
 
 SUBPROCESS_TIMEOUT = 3600  # 60 minutes
 MAX_STEPS = 30
-STEP_INCREMENT = 5
+STEP_CURRICULUM = [10, 20, 30]  # fixed targets, then 30 forever
 
 # Model curriculum: each model runs through the full step curriculum (2→30),
 # then we move to the next model and reset step target.
@@ -56,15 +55,8 @@ MODEL_CURRICULUM = [
 # ---- turn budget ----
 
 def compute_turn_budget(step_target: int) -> int:
-    """Scale turn budget: 30 at target=2, 150 at target=30, diminishing increases.
-
-    Uses power curve (exponent 0.85) so early levels get proportionally
-    more turns per new step than later levels.
-    """
-    if step_target <= 2:
-        return 30
-    ratio = (step_target - 2) / (MAX_STEPS - 2)  # 0..1
-    return int(30 + 120 * ratio ** 0.85)
+    """Scale turn budget proportionally: ~5 turns per step target."""
+    return max(30, step_target * 5)
 
 
 # ---- prompt backup ----
@@ -212,7 +204,15 @@ def run_model_phase(
 
     Returns the number of iterations actually used.
     """
-    step_target = initial_target
+    # Find starting position in curriculum
+    curriculum_idx = 0
+    for idx, t in enumerate(STEP_CURRICULUM):
+        if t >= initial_target:
+            curriculum_idx = idx
+            break
+    else:
+        curriculum_idx = len(STEP_CURRICULUM) - 1
+    step_target = STEP_CURRICULUM[curriculum_idx]
     iterations_used = 0
 
     print(f"\n{'*'*60}")
@@ -253,14 +253,11 @@ def run_model_phase(
         print(f"[train_loop] completed {steps_completed}/{step_target} steps")
 
         # 6. Advance curriculum if target met
-        if steps_completed >= step_target and step_target < MAX_STEPS:
+        if steps_completed >= step_target and curriculum_idx < len(STEP_CURRICULUM) - 1:
+            curriculum_idx += 1
             old_target = step_target
-            step_target = min(step_target + STEP_INCREMENT, MAX_STEPS)
+            step_target = STEP_CURRICULUM[curriculum_idx]
             print(f"[train_loop] ADVANCING: {old_target} -> {step_target} steps")
-
-        # Cap step target at MAX_STEPS
-        if step_target > MAX_STEPS:
-            step_target = MAX_STEPS
 
         # 7. Optimize prompt if we have a transcript
         if not transcript_file:

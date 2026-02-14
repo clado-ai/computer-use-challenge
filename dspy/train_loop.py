@@ -53,7 +53,7 @@ MODEL_CURRICULUM = [
 
 # DSPy GEPA runs every N iterations (expensive but thorough).
 # Between GEPA runs, the direct LLM optimizer handles each iteration.
-DSPY_INTERVAL = 5
+DSPY_INTERVAL = 3
 MIN_TRAJECTORIES_FOR_DSPY = 3
 
 

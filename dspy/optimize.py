@@ -32,6 +32,8 @@ def load_run_transcripts(transcript_files: list[str | Path]) -> list[dict]:
     for f in transcript_files:
         try:
             data = json.loads(Path(f).read_text())
+            if isinstance(data, dict) and "transcript" in data:
+                data = data["transcript"]
             transcripts.append({"file": Path(f).name, "data": data})
         except Exception:
             continue
@@ -47,28 +49,61 @@ def extract_rollout_steps(transcript_data: list[dict]) -> list[dict]:
         content = msg.get("content", "")
         role = msg.get("role", "")
 
-        if role == "assistant" and isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict):
-                    if block.get("type") == "text":
-                        text = block.get("text", "")
-                        current_step["agent_text"].append(text)
-                    elif block.get("type") == "tool_use":
-                        raw_input = str(block.get("input", ""))
-                        call = {
-                            "tool": block.get("name", ""),
-                            "input": raw_input[:500] if len(raw_input) > 500 else raw_input,
-                        }
-                        current_step["tool_calls"].append(call)
+        if role == "assistant":
+            # Handle both formats:
+            # Format A (Anthropic): content is list of {type: "text"/"tool_use"} blocks
+            # Format B (OpenAI/agent.ts): content is dict with {content, tool_calls}
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text":
+                            current_step["agent_text"].append(block.get("text", ""))
+                        elif block.get("type") == "tool_use":
+                            raw_input = str(block.get("input", ""))
+                            current_step["tool_calls"].append({
+                                "tool": block.get("name", ""),
+                                "input": raw_input[:500],
+                            })
+            elif isinstance(content, dict):
+                text = content.get("content", "")
+                if text and isinstance(text, str):
+                    current_step["agent_text"].append(text)
+                for tc in content.get("tool_calls", []):
+                    fn = tc.get("function", {})
+                    raw_input = fn.get("arguments", "")[:500]
+                    current_step["tool_calls"].append({
+                        "tool": fn.get("name", ""),
+                        "input": raw_input,
+                    })
+            elif isinstance(content, str) and content.strip():
+                current_step["agent_text"].append(content)
+
+        elif role == "tool":
+            # Format A: content is list with {type: "tool_result"} blocks
+            # Format B: content is dict with {result: "..."}
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        result_content = block.get("content", "")
+                        if isinstance(result_content, str):
+                            current_step["tool_results"].append(result_content[:1000])
+            elif isinstance(content, dict):
+                result = content.get("result", "")
+                if isinstance(result, str):
+                    current_step["tool_results"].append(result[:1000])
+            elif isinstance(content, str):
+                current_step["tool_results"].append(content[:1000])
+
+            if current_step["tool_calls"]:
+                steps.append(current_step)
+                current_step = {"agent_text": [], "tool_calls": [], "tool_results": []}
 
         elif role == "user" and isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     result_content = block.get("content", "")
                     if isinstance(result_content, str):
-                        capped = result_content[:1000] if len(result_content) > 1000 else result_content
-                        current_step["tool_results"].append(capped)
-
+                        current_step["tool_results"].append(result_content[:1000])
             if current_step["tool_calls"]:
                 steps.append(current_step)
                 current_step = {"agent_text": [], "tool_calls": [], "tool_results": []}
@@ -88,6 +123,8 @@ def analyze_trajectories(
     for f in transcript_files:
         try:
             data = json.loads(Path(f).read_text())
+            if isinstance(data, dict) and "transcript" in data:
+                data = data["transcript"]
             transcripts.append({"file": Path(f).name, "data": data})
         except Exception:
             continue

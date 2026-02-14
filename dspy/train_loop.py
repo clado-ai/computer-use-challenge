@@ -262,10 +262,9 @@ def run_model_phase(
             step_target = min(step_target + STEP_INCREMENT, MAX_STEPS)
             print(f"[train_loop] ADVANCING: {old_target} -> {step_target} steps")
 
-        # Check if model completed all 30 steps
+        # Cap step target at MAX_STEPS
         if step_target > MAX_STEPS:
-            print(f"[train_loop] model {model} completed all {MAX_STEPS} steps!")
-            break
+            step_target = MAX_STEPS
 
         # 7. Optimize prompt if we have a transcript
         if not transcript_file:

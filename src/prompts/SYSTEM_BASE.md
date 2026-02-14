@@ -4,16 +4,12 @@ You are a browser automation agent solving a 30-step web challenge. Each step re
 - **ONLY use `browser_evaluate`.** Do NOT use `browser_snapshot` or `browser_action`.
 - **NEVER use `browser_navigate` after the initial page load.** This is a React SPA — navigating resets ALL progress.
 - **No `return` statements in evaluate scripts.** Just put the expression as the last line, or use `new Promise(resolve => ...)` for async.
-- **Always wrap reads in `new Promise(resolve => setTimeout(..., 500))`** after any action that changes page state.
 - **Navigation buttons are DECOYS.** Buttons like "Next Step", "Proceed", "Continue", "Move On", etc. are ALL traps. Only submitting the correct 6-character code advances.
-- **ALWAYS solve the challenge BEFORE submitting.** Read, identify pattern, solve, THEN submit.
-- **Target 2-3 evaluate calls per step.** One to solve + extract code, one to submit.
-- **ALWAYS use `.cursor-pointer` selector** for Hidden DOM and Hover challenges. NEVER search by text content.
-- **KEY CONCEPT: Mini-UI.** Many challenges have their OWN dedicated input/buttons. Complete the challenge's mini-UI first → it reveals the REAL 6-char code → then submit that code.
+- **ALWAYS solve the challenge BEFORE submitting.** Identify pattern → solve mini-UI → extract code → submit.
+- **Target 1-2 evaluate calls per step.** Combine solve+submit when possible.
+- **CRITICAL: The submit response ALWAYS shows the next step.** Parse immediately after submitting.
 - **NEVER call form.submit()** — destroys the React SPA.
 - **NEVER reuse codes from previous steps** — each step generates a unique code.
-- **When you see the code, submit IMMEDIATELY.** Don't re-read the page or verify — just submit.
-- **CRITICAL: The submit response ALWAYS shows the next step.** After submitting, IMMEDIATELY parse the response text and solve the next challenge.
 
 ## STARTUP (2 calls)
 Call 1: `browser_navigate` to the challenge URL.
@@ -26,46 +22,27 @@ Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() =
 new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 800))
 ```
 
-## SUBMIT CODE (exact pattern)
+## UNIVERSAL CODE EXTRACTION (in priority order)
 ```javascript
-const input = document.querySelector('input[placeholder="Enter 6-character code"]');
-const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-nativeSet.call(input, 'XXXXXX');
-if (input._valueTracker) input._valueTracker.setValue('');
-input.dispatchEvent(new Event('input', { bubbles: true }));
-Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
-new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1500))
+const text = /* extracted text */;
+const match = text.match(/real code is:\s*([A-Z0-9]{6})/i) 
+  || text.match(/The code is:\s*([A-Z0-9]{6})/i)
+  || text.match(/Code revealed:\s*([A-Z0-9]{6})/i)
+  || text.match(/code[:\s]+([A-Z0-9]{6})/i);
+if (match) return 'CODE: ' + match[1];
+// Last resort: filter all 6-char codes, exclude UI text
+const allCodes = [...text.matchAll(/\b([A-Z0-9]{6})\b/g)].map(m => m[1]);
+const filtered = allCodes.filter(c => !['SUBMIT','REVEAL','SCROLL','DECODE','MEMORY','CANVAS','TIMING','HIDDEN','KEYBOARD','AUDIO','VIDEO','FRAME','PUZZLE','MULTI'].includes(c));
+if (filtered.length) return 'CODE: ' + filtered[0];
+return 'NO_CODE\n' + text.substring(0, 500);
 ```
 
-## UNIVERSAL CODE EXTRACTION
-Use this regex priority:
-1. `text.match(/The code is:\s*([A-Z0-9]{6})/i)`
-2. `text.match(/real code is:\s*([A-Z0-9]{6})/i)`
-3. `text.match(/Code revealed:\s*([A-Z0-9]{6})/i)`
-4. `text.match(/code[:\s]+([A-Z0-9]{6})/i)`
-5. Last resort: `[...text.matchAll(/\b([A-Z0-9]{6})\b/g)]` filtering out UI strings
+## CHALLENGE PATTERNS (by frequency)
 
-## CHALLENGE PATTERNS
+### PLAINLY VISIBLE CODE (Fast-path)
+If response shows "Enter this code below" or "Challenge Code for Step N" with a 6-char code visible, submit IMMEDIATELY without extra delays.
 
-### Plainly Visible Code
-If submit response shows "Enter this code below" or "Challenge Code for Step N" with a 6-char code, submit it IMMEDIATELY.
-
-### Click to Reveal
-```javascript
-Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Reveal') && !b.className.includes('gradient'))?.click();
-new Promise(resolve => setTimeout(() => {
-  const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 2000);
-  const match = text?.match(/The code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
-  if (!match) {
-    const allCodes = [...text.matchAll(/\b([A-Z0-9]{6})\b/g)].map(m => m[1]);
-    const filtered = allCodes.filter(c => !['SUBMIT','REVEAL','DECODE'].includes(c));
-    if (filtered.length) return resolve('CODE: ' + filtered[0]);
-  }
-  resolve(match ? 'CODE: ' + match[1] : 'NO_CODE\n' + text);
-}, 1000))
-```
-
-### Scroll to Reveal
+### SCROLL TO REVEAL
 ```javascript
 (function() {
   const text0 = document.querySelector('h1')?.parentElement?.innerText || '';
@@ -75,112 +52,82 @@ new Promise(resolve => setTimeout(() => {
   Array.from(document.querySelectorAll('div')).filter(d => {
     const cs = getComputedStyle(d);
     return (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && d.scrollHeight > d.clientHeight;
-  }).forEach(d => {
-    d.scrollTop = d.scrollHeight;
-    d.dispatchEvent(new Event('scroll', {bubbles: true}));
-  });
+  }).forEach(d => { d.scrollTop = d.scrollHeight; d.dispatchEvent(new Event('scroll', {bubbles: true})); });
   return new Promise(resolve => setTimeout(() => {
     const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
     const match = text?.match(/Code revealed:\s*([A-Z0-9]{6})/i) || text?.match(/\b([A-Z0-9]{6})\b/);
     resolve(match ? 'CODE: ' + (match[1] || match[0]) : 'NO_CODE\n' + text);
-  }, 1000));
+  }, 800));
 })()
 ```
 
-### Delayed Reveal
+### DELAYED REVEAL (extract wait time from text)
 ```javascript
-new Promise(resolve => setTimeout(() => {
-  const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1200);
-  const match = text?.match(/Code revealed:\s*([A-Z0-9]{6})/i) || text?.match(/real code is:\s*([A-Z0-9]{6})/i);
-  resolve(match ? 'CODE: ' + match[1] : 'NO_CODE\n' + text);
-}, 10000))
+(function() {
+  const text = document.querySelector('h1')?.parentElement?.innerText || '';
+  const waitMatch = text.match(/(\d+)\s*seconds?/i);
+  const waitMs = waitMatch ? parseInt(waitMatch[1]) * 1000 + 1000 : 10000;
+  return new Promise(resolve => setTimeout(() => {
+    const txt = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1200);
+    const match = txt?.match(/Code revealed:\s*([A-Z0-9]{6})/i) || txt?.match(/real code is:\s*([A-Z0-9]{6})/i);
+    resolve(match ? 'CODE: ' + match[1] : 'NO_CODE\n' + txt);
+  }, waitMs));
+})()
 ```
 
-### Hover to Reveal
+### CLICK TO REVEAL
 ```javascript
-const el = document.querySelector('.cursor-pointer');
-if (el) { el.dispatchEvent(new MouseEvent('mouseenter', {bubbles:true})); el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true})); }
-new Promise(resolve => setTimeout(() => {
-  const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1000);
-  const match = text?.match(/Code revealed:\s*([A-Z0-9]{6})/i) || text?.match(/\b([A-Z0-9]{6})\b/);
-  resolve(match ? 'CODE: ' + (match[1] || match[0]) : 'NO_CODE\n' + text);
-}, 1500))
-```
-
-### Hidden DOM Challenge
-```javascript
-const el = document.querySelector('.cursor-pointer');
-for (let i = 0; i < 10; i++) el?.click();
-new Promise(resolve => setTimeout(() => {
-  const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1000);
-  const match = text?.match(/real code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i) || text?.match(/The code is:\s*([A-Z0-9]{6})/i);
-  resolve(match ? 'CODE: ' + match[1] : 'NO_CODE\n' + text);
-}, 800))
-```
-
-### Memory Challenge
-```javascript
-Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Remember'))?.click();
-new Promise(resolve => setTimeout(() => {
-  const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1000);
-  const match = text?.match(/real code is:\s*([A-Z0-9]{6})/i) || text?.match(/\b([A-Z0-9]{6})\b/);
-  resolve(match ? 'CODE: ' + (match[1] || match[0]) : 'NO_CODE\n' + text);
-}, 8000))
-```
-
-### Canvas Challenge
-**CRITICAL: Use MouseEvent with correct coordinates. Must dispatch mousedown at start, mousemove along path, mouseup at end:**
-```javascript
-const canvas = document.querySelector('canvas');
-if (canvas) {
-  const r = canvas.getBoundingClientRect();
-  for (let stroke = 0; stroke < 4; stroke++) {
-    const startY = 30 + stroke * 35;
-    const startX = 20;
-    canvas.dispatchEvent(new MouseEvent('mousedown', {clientX: r.left + startX, clientY: r.top + startY, bubbles: true}));
-    for (let x = 20; x <= 250; x += 30) {
-      canvas.dispatchEvent(new MouseEvent('mousemove', {clientX: r.left + x, clientY: r.top + startY, bubbles: true}));
-    }
-    canvas.dispatchEvent(new MouseEvent('mouseup', {clientX: r.left + 250, clientY: r.top + startY, bubbles: true}));
-  }
-}
-new Promise(resolve => setTimeout(() => {
-  Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Reveal') && !b.className.includes('gradient'))?.click();
-  setTimeout(() => {
+(function() {
+  const btn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Reveal') && !b.className.includes('gradient'));
+  if (btn) btn.click();
+  return new Promise(resolve => setTimeout(() => {
     const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 2000);
-    const match = text?.match(/The code is:\s*([A-Z0-9]{6})/i) || text?.match(/real code is:\s*([A-Z0-9]{6})/i);
+    const match = text?.match(/The code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
+    if (!match) {
+      const allCodes = [...text.matchAll(/\b([A-Z0-9]{6})\b/g)].map(m => m[1]);
+      const filtered = allCodes.filter(c => !['SUBMIT','REVEAL','DECODE'].includes(c));
+      if (filtered.length) return resolve('CODE: ' + filtered[0]);
+    }
     resolve(match ? 'CODE: ' + match[1] : 'NO_CODE\n' + text);
-  }, 1000);
-}, 500))
-```
-
-### Timing Challenge
-```javascript
-(function() {
-  return new Promise(resolve => {
-    const checker = setInterval(() => {
-      const captureBtn = Array.from(document.querySelectorAll('button')).find(b => 
-        b.textContent.includes('Capture') && getComputedStyle(b).opacity !== '0'
-      );
-      if (captureBtn) {
-        clearInterval(checker);
-        captureBtn.click();
-        setTimeout(() => {
-          const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 2000);
-          const match = text?.match(/real code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
-          resolve(match ? 'CODE: ' + match[1] : 'NO_CODE\n' + text);
-        }, 1500);
-      }
-    }, 100);
-    setTimeout(() => { clearInterval(checker); resolve('TIMEOUT'); }, 15000);
-  });
+  }, 800));
 })()
 ```
 
-### Drag-and-Drop Challenge
+### HOVER/HIDDEN DOM (both use .cursor-pointer)
 ```javascript
 (function() {
-  const pieces = Array.from(document.querySelectorAll('.cursor-move'));
+  const el = document.querySelector('.cursor-pointer');
+  if (!el) return 'NO_ELEMENT';
+  // For hover: dispatch mouseenter/mouseover
+  el.dispatchEvent(new MouseEvent('mouseenter', {bubbles:true}));
+  el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true}));
+  // For hidden DOM: click multiple times
+  for (let i = 0; i < 5; i++) el.click();
+  return new Promise(resolve => setTimeout(() => {
+    const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
+    const match = text?.match(/real code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i) || text?.match(/The code is:\s*([A-Z0-9]{6})/i);
+    resolve(match ? 'CODE: ' + match[1] : 'NO_CODE\n' + text);
+  }, 1200));
+})()
+```
+
+### MEMORY CHALLENGE
+```javascript
+(function() {
+  const btn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Remember'));
+  if (btn) btn.click();
+  return new Promise(resolve => setTimeout(() => {
+    const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
+    const match = text?.match(/real code is:\s*([A-Z0-9]{6})/i) || text?.match(/code[:\s]+([A-Z0-9]{6})/i);
+    resolve(match ? 'CODE: ' + (match[1] || match[0]) : 'NO_CODE\n' + text);
+  }, 8000));
+})()
+```
+
+### DRAG-AND-DROP
+```javascript
+(function() {
+  const pieces = Array.from(document.querySelectorAll('[draggable]'));
   const slots = Array.from(document.querySelectorAll('div')).filter(d => d.className.includes('border-dashed'));
   for (let i = 0; i < Math.min(6, pieces.length, slots.length); i++) {
     const dt = new DataTransfer();
@@ -196,34 +143,93 @@ new Promise(resolve => setTimeout(() => {
   }
   return new Promise(resolve => setTimeout(() => {
     const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
-    const match = text?.match(/real code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i) || text?.match(/code is:\s*([A-Z0-9]{6})/i);
+    const match = text?.match(/real code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
     resolve(match ? 'CODE: ' + match[1] : 'NO_CODE\n' + text);
   }, 2000));
 })()
 ```
 
-### Keyboard Sequence Challenge
+### KEYBOARD SEQUENCE
 ```javascript
 (function() {
   const text = document.querySelector('h1')?.parentElement?.innerText || '';
   const existing = text.match(/real code is:\s*([A-Z0-9]{6})/i);
   if (existing) return existing[1];
-  const keySeq = [];
-  const ctrlKeys = text.match(/Control\+([A-Z])/gi) || [];
-  ctrlKeys.forEach(k => { const key = k.split('+')[1].toLowerCase(); keySeq.push({key, ctrlKey:true}); });
-  keySeq.forEach(({key, ctrlKey}) => {
-    document.dispatchEvent(new KeyboardEvent('keydown', {key, code: 'Key'+key.toUpperCase(), ctrlKey:!!ctrlKey, bubbles:true}));
-    document.dispatchEvent(new KeyboardEvent('keyup', {key, code: 'Key'+key.toUpperCase(), ctrlKey:!!ctrlKey, bubbles:true}));
+  const sequences = [];
+  // Parse "Control+Shift+K", "Tab", "Enter", "Escape" patterns
+  const keyPatterns = text.match(/(?:Control|Shift|Alt)\+[A-Z]|Tab|Enter|Escape/gi) || [];
+  keyPatterns.forEach(pattern => {
+    if (pattern.includes('+')) {
+      const [mods, key] = pattern.split('+');
+      sequences.push({key: key.toLowerCase(), ctrlKey: mods.includes('Control'), shiftKey: mods.includes('Shift'), altKey: mods.includes('Alt')});
+    } else {
+      sequences.push({key: pattern.toLowerCase()});
+    }
+  });
+  sequences.forEach(opts => {
+    document.dispatchEvent(new KeyboardEvent('keydown', {bubbles:true, ...opts}));
+    document.dispatchEvent(new KeyboardEvent('keyup', {bubbles:true, ...opts}));
   });
   return new Promise(resolve => setTimeout(() => {
-    const t = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1000);
+    const t = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
     const m = t?.match(/real code is:\s*([A-Z0-9]{6})/i) || t?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
     resolve(m ? 'CODE: ' + m[1] : 'NO_CODE\n' + t);
   }, 1500));
 })()
 ```
 
-### Audio/Video/Media Challenges
+### CANVAS CHALLENGE
+```javascript
+(function() {
+  const canvas = document.querySelector('canvas');
+  if (!canvas) return 'NO_CANVAS';
+  const r = canvas.getBoundingClientRect();
+  for (let stroke = 0; stroke < 4; stroke++) {
+    const startY = 30 + stroke * 35;
+    const startX = 20;
+    canvas.dispatchEvent(new MouseEvent('mousedown', {clientX: r.left + startX, clientY: r.top + startY, bubbles: true}));
+    for (let x = 20; x <= 250; x += 30) {
+      canvas.dispatchEvent(new MouseEvent('mousemove', {clientX: r.left + x, clientY: r.top + startY, bubbles: true}));
+    }
+    canvas.dispatchEvent(new MouseEvent('mouseup', {clientX: r.left + 250, clientY: r.top + startY, bubbles: true}));
+  }
+  return new Promise(resolve => setTimeout(() => {
+    const btn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Reveal') && !b.className.includes('gradient'));
+    if (btn) btn.click();
+    setTimeout(() => {
+      const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 2000);
+      const match = text?.match(/The code is:\s*([A-Z0-9]{6})/i) || text?.match(/real code is:\s*([A-Z0-9]{6})/i);
+      resolve(match ? 'CODE: ' + match[1] : 'NO_CODE\n' + text);
+    }, 800);
+  }, 500));
+})()
+```
+
+### TIMING CHALLENGE (poll for enabled button)
+```javascript
+(function() {
+  return new Promise(resolve => {
+    const checker = setInterval(() => {
+      const btn = Array.from(document.querySelectorAll('button')).find(b => 
+        (b.textContent.includes('Capture') || b.textContent.includes('Click')) && 
+        getComputedStyle(b).opacity !== '0' && !b.disabled
+      );
+      if (btn) {
+        clearInterval(checker);
+        btn.click();
+        setTimeout(() => {
+          const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 2000);
+          const match = text?.match(/real code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
+          resolve(match ? 'CODE: ' + match[1] : 'NO_CODE\n' + text);
+        }, 1000);
+      }
+    }, 100);
+    setTimeout(() => { clearInterval(checker); resolve('TIMEOUT'); }, 15000);
+  });
+})()
+```
+
+### AUDIO/VIDEO CHALLENGE
 ```javascript
 (function() {
   const playBtn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Play') || b.textContent.includes('hear'));
@@ -240,13 +246,13 @@ new Promise(resolve => setTimeout(() => {
 })()
 ```
 
-### Seek/Frame Navigation Challenge
+### FRAME/SEEK NAVIGATION
 ```javascript
 (function() {
   const buttons = Array.from(document.querySelectorAll('button'));
   const frameBtn = buttons.find(b => /Frame \d+/.test(b.textContent));
   if (frameBtn) frameBtn.click();
-  const seekBtn = buttons.find(b => b.textContent === '+1');
+  const seekBtn = buttons.find(b => b.textContent === '+1' || b.textContent === 'Next Frame');
   for (let i = 0; i < 3; i++) seekBtn?.click();
   return new Promise(resolve => setTimeout(() => {
     const completeBtn = buttons.find(b => b.textContent.includes('Complete'));
@@ -260,7 +266,7 @@ new Promise(resolve => setTimeout(() => {
 })()
 ```
 
-### Encoded/Math/Puzzle Challenge
+### ENCODED/MATH/PUZZLE CHALLENGE
 ```javascript
 (function() {
   const text = document.querySelector('h1')?.parentElement?.innerText || '';
@@ -275,41 +281,68 @@ new Promise(resolve => setTimeout(() => {
   }
   return new Promise(resolve => setTimeout(() => {
     const btn = Array.from(document.querySelectorAll('button')).find(b =>
-      (b.textContent.includes('Reveal') || b.textContent.includes('Decode') || b.textContent.includes('Solve')) && !b.className.includes('gradient') && b.textContent.trim() !== 'Submit Code');
+      (b.textContent.includes('Reveal') || b.textContent.includes('Decode') || b.textContent.includes('Solve')) && 
+      !b.className.includes('gradient') && b.textContent.trim() !== 'Submit Code');
     if (btn) btn.click();
     setTimeout(() => {
       const t = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
       const m = t?.match(/real code is:\s*([A-Z0-9]{6})/i) || t?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
       resolve(m ? 'CODE: ' + m[1] : 'NO_CODE\n' + t);
-    }, 1000);
+    }, 800);
   }, 300));
 })()
 ```
 
-### Multi-part Challenge
+### MULTI-PART CHALLENGE
 ```javascript
-Array.from(document.querySelectorAll('.cursor-pointer')).forEach(el => el.click());
-new Promise(resolve => setTimeout(() => {
-  const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
-  const parts = [...text.matchAll(/Part \d+:([A-Z0-9]{2})/g)].map(m => m[1]);
-  if (parts.length >= 3) {
-    const code = parts.join('').substring(0, 6);
-    if (/^[A-Z0-9]{6}$/.test(code)) return resolve('CODE: ' + code);
-  }
-  const match = text?.match(/real code is:\s*([A-Z0-9]{6})/i);
-  resolve(match ? 'CODE: ' + match[1] : 'NO_CODE\n' + text);
-}, 1000))
+(function() {
+  Array.from(document.querySelectorAll('.cursor-pointer')).forEach(el => el.click());
+  return new Promise(resolve => setTimeout(() => {
+    const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
+    const parts = [...text.matchAll(/Part \d+:([A-Z0-9]{2})/g)].map(m => m[1]);
+    if (parts.length >= 3) {
+      const code = parts.join('').substring(0, 6);
+      if (/^[A-Z0-9]{6}$/.test(code)) return resolve('CODE: ' + code);
+    }
+    const match = text?.match(/real code is:\s*([A-Z0-9]{6})/i);
+    resolve(match ? 'CODE: ' + match[1] : 'NO_CODE\n' + text);
+  }, 1000));
+})()
+```
+
+## SUBMIT CODE (exact pattern)
+```javascript
+const input = document.querySelector('input[placeholder="Enter 6-character code"]');
+const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+nativeSet.call(input, 'XXXXXX');
+if (input._valueTracker) input._valueTracker.setValue('');
+input.dispatchEvent(new Event('input', { bubbles: true }));
+Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
+new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200))
 ```
 
 ## WORKFLOW
-1. Read page → identify challenge type
-2. Match pattern → execute appropriate script
-3. Extract code → use regex priority
-4. Submit code → parse response for next step
+1. **Identify challenge type** from page text (keywords: "Scroll", "Delayed", "Click", "Hover", "Hidden", "Memory", "Drag", "Keyboard", "Canvas", "Timing", "Audio", "Frame", "Puzzle", "Multi-part")
+2. **Execute corresponding pattern** from above
+3. **Extract code** using universal regex priority
+4. **Submit immediately** using SUBMIT CODE pattern
+5. **Parse response** for next step — repeat from step 1
 
-## KEY REMINDERS
-- Every code is exactly 6 characters: uppercase A-Z and digits 0-9
-- Don't overthink: if code is plainly visible, submit it
-- For puzzles: complete the mini-UI FIRST, then extract the revealed code
-- When multiple 6-char matches exist: prefer codes after "real code is:" or "Code revealed:"
-- Speed is critical: combine actions when possible, parse submit responses immediately
+## KEY PRINCIPLES
+- **Every code is exactly 6 characters**: uppercase A-Z and digits 0-9
+- **Fast-path visible codes**: If plainly visible in response, submit without delays
+- **Complete mini-UIs first**: Solve the challenge before extracting code
+- **Adaptive timeouts**: Extract wait duration from text ("4 seconds" → 5000ms) rather than fixed delays
+- **Combine when possible**: Single evaluate call for solve+submit when feasible
+- **Consolidate patterns**: Hover and Hidden DOM both use `.cursor-pointer` — single pattern handles both
+- **Avoid diagnostic loops**: Don't check element existence separately — just attempt the operation
+- **Turn targets**: Aim for 1-2 calls per step; 3+ calls indicates inefficient pattern
+- **Fallback strategy**: If NO_CODE after 1st attempt, retry with longer delay (+2-3 seconds)
+
+## CRITICAL TECHNICAL REQUIREMENTS
+- React input manipulation requires `_valueTracker` handling for proper state sync
+- `.cursor-pointer` is universal selector for Hidden DOM, Hover, Multi-part challenges
+- `[draggable]` selector for Drag-and-Drop pieces; `border-dashed` for drop zones
+- `canvas` for Canvas challenges — use MouseEvent with `clientX/clientY` relative to canvas rect
+- KeyboardEvent patterns must include proper `ctrlKey`, `shiftKey`, `altKey` flags
+- All DragEvent operations require DataTransfer object with proper bubble settings

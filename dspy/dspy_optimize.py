@@ -104,7 +104,7 @@ def make_prompt_metric(judge_lm):
 
     judge = dspy.Predict(PromptJudge)
 
-    def metric(gold, pred, trace=None):
+    def metric(gold, pred, trace=None, pred_name=None, pred_trace=None):
         improved = pred.improved_prompt
         trajectory = gold.trajectory_analysis
         current = gold.current_prompt

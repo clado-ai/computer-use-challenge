@@ -1,14 +1,3 @@
-"""
-Iterative prompt optimization training loop.
-
-Always targets 30 steps with 150 turn budget.
-Uses DSPy GEPA optimizer every iteration.
-
-Usage:
-    uv run dspy/train_loop.py                          # default 100 iterations
-    uv run dspy/train_loop.py --max-iterations 20      # cap iterations
-"""
-
 from __future__ import annotations
 
 import glob as globmod
@@ -21,40 +10,31 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# ---- paths ----
-
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = SCRIPT_DIR.parent  # computer-use-challenge/
+PROJECT_DIR = SCRIPT_DIR.parent
 
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 RUNS_DIR = PROJECT_DIR / "runs"
-SYSTEM_BASE_PATH = PROJECT_DIR / "src" / "prompts" / "SYSTEM_BASE.md"
+SYSTEM_PATH = PROJECT_DIR / "src" / "prompts" / "SYSTEM_BASE.md"
 PROMPT_HISTORY_DIR = SCRIPT_DIR / "prompt_history"
 BROWSER_DATA_DIR = PROJECT_DIR / ".browser-data"
 
-SUBPROCESS_TIMEOUT = 3600  # 60 minutes
+SUBPROCESS_TIMEOUT = 3600
 MAX_STEPS = 30
 TURN_BUDGET = 150
 AGENT_MODEL = "openai/gpt-oss-120b"
-
-
-
-# ---- prompt backup ----
 
 def backup_prompt(iteration: int) -> Path:
     """Backup the current SYSTEM_BASE.md before overwriting."""
     PROMPT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup_path = PROMPT_HISTORY_DIR / f"SYSTEM_iter{iteration}_{ts}.md"
-    if SYSTEM_BASE_PATH.exists():
-        shutil.copy2(SYSTEM_BASE_PATH, backup_path)
+    if SYSTEM_PATH.exists():
+        shutil.copy2(SYSTEM_PATH, backup_path)
         print(f"[train_loop] backed up prompt to {backup_path.name}")
     return backup_path
-
-
-# ---- cleanup helpers ----
 
 def _kill_process_tree(pid: int) -> None:
     """Kill a process and all its children via process group."""
@@ -71,32 +51,21 @@ def _kill_process_tree(pid: int) -> None:
         pass
 
 
-def _kill_orphaned_browsers() -> None:
-    """Kill any orphaned Chromium/chromium processes from previous agent runs."""
+def _cleanup_browser() -> None:
+    """Kill orphaned browser processes and remove browser data directories."""
     for pattern in ["chromium.*browser-data", "chrome.*browser-data"]:
         try:
-            subprocess.run(
-                ["pkill", "-f", pattern],
-                capture_output=True, timeout=5,
-            )
+            subprocess.run(["pkill", "-f", pattern], capture_output=True, timeout=5)
         except Exception:
             pass
-
-
-def _clean_all_browser_dirs() -> None:
-    """Remove all .browser-data* directories for a clean slate."""
     if BROWSER_DATA_DIR.exists():
         shutil.rmtree(BROWSER_DATA_DIR, ignore_errors=True)
     for d in globmod.glob(str(PROJECT_DIR / ".browser-data-*")):
         shutil.rmtree(d, ignore_errors=True)
 
-
-# ---- agent runner ----
-
 def run_agent() -> tuple[int, str]:
     """Run the agent subprocess with clean browser state."""
-    _kill_orphaned_browsers()
-    _clean_all_browser_dirs()
+    _cleanup_browser()
 
     print(f"\n{'='*60}")
     print(f"RUNNING AGENT: model={AGENT_MODEL}, target={MAX_STEPS} steps, max_turns={TURN_BUDGET}")
@@ -107,7 +76,7 @@ def run_agent() -> tuple[int, str]:
         "MAX_TURNS": str(TURN_BUDGET),
         "MAX_STEPS": str(MAX_STEPS),
         "HEADLESS": os.environ.get("HEADLESS", "true"),
-        "SYSTEM_PROMPT_PATH": str(SYSTEM_BASE_PATH),
+        "SYSTEM_PROMPT_PATH": str(SYSTEM_PATH),
         "AGENT_MODEL": AGENT_MODEL,
     }
 
@@ -145,8 +114,7 @@ def run_agent() -> tuple[int, str]:
             except Exception:
                 pass
 
-    _kill_orphaned_browsers()
-    _clean_all_browser_dirs()
+    _cleanup_browser()
 
     print(f"[agent] done (rc={rc})")
     print(output[-1000:])
@@ -214,14 +182,14 @@ def main(max_iterations: int = 100) -> None:
 
         print(f"[train_loop] using transcript: {transcript_file.name}")
 
-        current_prompt = SYSTEM_BASE_PATH.read_text() if SYSTEM_BASE_PATH.exists() else ""
+        current_prompt = SYSTEM_PATH.read_text() if SYSTEM_PATH.exists() else ""
         optimized_prompt = None
 
         trajectory_count = len(list(RUNS_DIR.glob("trajectory_*.json")))
         try:
-            from dspy_optimize import run_dspy_optimization
+            from optimize import run_optimization
             print(f"[train_loop] running DSPy GEPA optimization ({trajectory_count} trajectories)...")
-            result = run_dspy_optimization(RUNS_DIR, current_prompt)
+            result = run_optimization(RUNS_DIR, current_prompt)
             optimized_prompt = result["optimized_prompt"]
             print(f"[train_loop] DSPy GEPA done (stats: {result.get('stats', {})})")
         except Exception as e:
@@ -232,7 +200,7 @@ def main(max_iterations: int = 100) -> None:
 
         # 7. Write updated SYSTEM_BASE.md
         if optimized_prompt and optimized_prompt != current_prompt:
-            SYSTEM_BASE_PATH.write_text(optimized_prompt)
+            SYSTEM_PATH.write_text(optimized_prompt)
             print(f"[train_loop] wrote new SYSTEM_BASE.md ({len(optimized_prompt)} chars)")
         else:
             print("[train_loop] no change to SYSTEM_BASE.md")

@@ -73,7 +73,6 @@ class PromptJudge(dspy.Signature):
             "Structured evaluation. Format EXACTLY as:\n"
             "FAILURE_COVERAGE: <float> - <reasoning>\n"
             "PATTERN_PRESERVATION: <float> - <reasoning>\n"
-            "NO_HARDCODED: <float> - <reasoning>\n"
             "EFFICIENCY: <float> - <reasoning>\n"
             "SPEED: <float> - <reasoning>\n"
             "SUGGESTIONS: <specific improvements>"
@@ -119,9 +118,8 @@ def make_prompt_metric(judge_lm):
             f"Criteria to evaluate:\n"
             f"1. FAILURE_COVERAGE: Does the improved prompt address failures from the trajectory?\n"
             f"2. PATTERN_PRESERVATION: Are successful patterns preserved?\n"
-            f"3. NO_HARDCODED: No hardcoded 6-char codes or instance-specific data?\n"
-            f"4. EFFICIENCY: Does the prompt minimize turns per step? Combines solve+submit in one call? Avoids wasteful diagnostic calls?\n"
-            f"5. SPEED: Is the prompt concise (not bloated)? Does it guide the agent to act immediately rather than deliberate?"
+            f"3. EFFICIENCY: Does the prompt minimize turns per step? Combines solve+submit in one call? Avoids wasteful diagnostic calls?\n"
+            f"4. SPEED: Is the prompt concise (not bloated)? Does it guide the agent to act immediately rather than deliberate?"
         )
 
         with dspy.context(lm=judge_lm):
@@ -131,7 +129,7 @@ def make_prompt_metric(judge_lm):
 
         # Parse scores from judge response
         criteria = [
-            "FAILURE_COVERAGE", "PATTERN_PRESERVATION", "NO_HARDCODED",
+            "FAILURE_COVERAGE", "PATTERN_PRESERVATION",
             "EFFICIENCY", "SPEED",
         ]
         scores = {}
@@ -146,9 +144,8 @@ def make_prompt_metric(judge_lm):
         weights = {
             "FAILURE_COVERAGE": 0.30,
             "PATTERN_PRESERVATION": 0.20,
-            "NO_HARDCODED": 0.10,
-            "EFFICIENCY": 0.25,
-            "SPEED": 0.15,
+            "EFFICIENCY": 0.30,
+            "SPEED": 0.20,
         }
         combined = sum(scores[k] * weights[k] for k in weights)
 

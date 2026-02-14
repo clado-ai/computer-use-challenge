@@ -111,6 +111,18 @@ export const toolDefinitions: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "browser_screenshot",
+      description:
+        "Take a screenshot of the current browser page. Returns the screenshot as a base64-encoded PNG image. Use this to visually inspect the page.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
 ];
 
 // ---- tool execution ----
@@ -124,6 +136,8 @@ async function executeToolInner(
       return await toolNavigate(input.url as string);
     case "browser_evaluate":
       return await toolEvaluate(input.script as string);
+    case "browser_screenshot":
+      return await toolScreenshot();
     default:
       return `unknown tool: ${name}`;
   }
@@ -202,6 +216,13 @@ async function toolEvaluate(script: string): Promise<string> {
 
     return `error: evaluate: ${msg}`;
   }
+}
+
+async function toolScreenshot(): Promise<string> {
+  const page = await ensurePage();
+  const buffer = await page.screenshot({ type: "png", fullPage: false });
+  const base64 = buffer.toString("base64");
+  return `SCREENSHOT_BASE64:${base64}`;
 }
 
 // cleanup

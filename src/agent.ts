@@ -10,7 +10,7 @@ const CHALLENGE_URL = "https://serene-frangipane-7fd25b.netlify.app";
 const MAX_TURNS = 1000;
 const MAX_API_RETRIES = 5;
 
-const systemPromptPath = path.join(import.meta.dir, "prompts", "SYSTEM.md");
+const systemPromptPath = path.join(import.meta.dir, "prompts", "SYSTEM_BASE.md");
 const SYSTEM_PROMPT = fs.readFileSync(systemPromptPath, "utf-8");
 
 // Bypass: decode sessionStorage to get the code and submit directly.

@@ -42,10 +42,9 @@ class PromptImprover(dspy.Signature):
     Then produce an improved prompt that:
     - Fixes failure patterns with concrete JavaScript solutions
     - Preserves and reinforces successful patterns
-    - Maximizes speed: combine solve+submit in single calls, avoid diagnostic waste
     - Maximizes efficiency: minimize turns per step (target 2-3 calls per step)
-    - Stays concise (each extra token costs money every API call)
-    - NEVER includes hardcoded codes, passwords, or instance-specific data
+    - Reduces total steps failed (most important metric)
+    - Be as detailed and comprehensive as needed — length is not a concern
     """
 
     trajectory_analysis = dspy.InputField(
@@ -74,7 +73,6 @@ class PromptJudge(dspy.Signature):
             "FAILURE_COVERAGE: <float> - <reasoning>\n"
             "PATTERN_PRESERVATION: <float> - <reasoning>\n"
             "EFFICIENCY: <float> - <reasoning>\n"
-            "SPEED: <float> - <reasoning>\n"
             "SUGGESTIONS: <specific improvements>"
         )
     )
@@ -111,15 +109,14 @@ def make_prompt_metric(judge_lm):
         eval_context = (
             f"TRAJECTORY ANALYSIS (what happened during the agent's run):\n"
             f"{trajectory[:8000]}\n\n"
-            f"ORIGINAL PROMPT (first 3000 chars):\n"
-            f"{current[:3000]}\n\n"
-            f"IMPROVED PROMPT (first 8000 chars):\n"
-            f"{improved[:8000]}\n\n"
+            f"ORIGINAL PROMPT:\n"
+            f"{current}\n\n"
+            f"IMPROVED PROMPT:\n"
+            f"{improved}\n\n"
             f"Criteria to evaluate:\n"
-            f"1. FAILURE_COVERAGE: Does the improved prompt address failures from the trajectory?\n"
+            f"1. FAILURE_COVERAGE: Does the improved prompt address failures from the trajectory? Will it help the agent complete MORE steps?\n"
             f"2. PATTERN_PRESERVATION: Are successful patterns preserved?\n"
-            f"3. EFFICIENCY: Does the prompt minimize turns per step? Combines solve+submit in one call? Avoids wasteful diagnostic calls?\n"
-            f"4. SPEED: Is the prompt concise (not bloated)? Does it guide the agent to act immediately rather than deliberate?"
+            f"3. EFFICIENCY: Does the prompt minimize turns per step? Combines solve+submit in one call? Avoids wasteful diagnostic calls?"
         )
 
         with dspy.context(lm=judge_lm):
@@ -130,7 +127,7 @@ def make_prompt_metric(judge_lm):
         # Parse scores from judge response
         criteria = [
             "FAILURE_COVERAGE", "PATTERN_PRESERVATION",
-            "EFFICIENCY", "SPEED",
+            "EFFICIENCY",
         ]
         scores = {}
         for c in criteria:
@@ -142,10 +139,9 @@ def make_prompt_metric(judge_lm):
 
         # Weighted combination
         weights = {
-            "FAILURE_COVERAGE": 0.30,
+            "FAILURE_COVERAGE": 0.50,
             "PATTERN_PRESERVATION": 0.20,
             "EFFICIENCY": 0.30,
-            "SPEED": 0.20,
         }
         combined = sum(scores[k] * weights[k] for k in weights)
 
@@ -268,7 +264,7 @@ def run_dspy_optimization(
         model=model,
         api_key=api_key,
         temperature=0.7,
-        max_tokens=16384,
+        max_tokens=65536,
     )
     judge_lm = dspy.LM(
         model=model,

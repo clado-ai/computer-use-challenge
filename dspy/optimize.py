@@ -13,64 +13,29 @@ PROMPT_HISTORY_DIR = SCRIPT_DIR / "prompt_history"
 
 
 def extract_rollout_steps(transcript_data: list[dict]) -> list[dict]:
-    """Extract a per-step summary from a raw transcript."""
+    """Extract a per-step summary from a raw transcript (OpenAI format)."""
     steps = []
-    current_step = {"agent_text": [], "tool_calls": [], "tool_results": []}
+    current_step: dict = {"agent_text": [], "tool_calls": [], "tool_results": []}
 
     for msg in transcript_data:
         content = msg.get("content", "")
         role = msg.get("role", "")
 
         if role == "assistant":
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "text":
-                            current_step["agent_text"].append(block.get("text", ""))
-                        elif block.get("type") == "tool_use":
-                            raw_input = str(block.get("input", ""))
-                            current_step["tool_calls"].append({
-                                "tool": block.get("name", ""),
-                                "input": raw_input[:500],
-                            })
-            elif isinstance(content, dict):
+            if isinstance(content, dict):
                 text = content.get("content", "")
                 if text and isinstance(text, str):
                     current_step["agent_text"].append(text)
                 for tc in content.get("tool_calls", []):
                     fn = tc.get("function", {})
-                    raw_input = fn.get("arguments", "")[:500]
                     current_step["tool_calls"].append({
                         "tool": fn.get("name", ""),
-                        "input": raw_input,
+                        "input": fn.get("arguments", "")[:500],
                     })
-            elif isinstance(content, str) and content.strip():
-                current_step["agent_text"].append(content)
 
         elif role == "tool":
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "tool_result":
-                        result_content = block.get("content", "")
-                        if isinstance(result_content, str):
-                            current_step["tool_results"].append(result_content[:1000])
-            elif isinstance(content, dict):
-                result = content.get("result", "")
-                if isinstance(result, str):
-                    current_step["tool_results"].append(result[:1000])
-            elif isinstance(content, str):
-                current_step["tool_results"].append(content[:1000])
-
-            if current_step["tool_calls"]:
-                steps.append(current_step)
-                current_step = {"agent_text": [], "tool_calls": [], "tool_results": []}
-
-        elif role == "user" and isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "tool_result":
-                    result_content = block.get("content", "")
-                    if isinstance(result_content, str):
-                        current_step["tool_results"].append(result_content[:1000])
+            result = content.get("result", "") if isinstance(content, dict) else str(content)
+            current_step["tool_results"].append(result[:1000])
             if current_step["tool_calls"]:
                 steps.append(current_step)
                 current_step = {"agent_text": [], "tool_calls": [], "tool_results": []}
@@ -407,9 +372,6 @@ def build_trainset(
         return []
 
     combined = "\n\n".join(analyses)
-    if len(combined) > 100000:
-        combined = combined[:100000] + "\n... (truncated)"
-
     print(f"[optimize] combined {len(analyses)} trajectories ({len(combined)} chars)")
 
     example = dspy.Example(

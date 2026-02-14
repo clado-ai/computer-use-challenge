@@ -235,7 +235,7 @@ Rules:
 def run_optimization(
     transcript_file: str | Path,
     current_prompt: str,
-    model: str = "anthropic/claude-opus-4.6",
+    model: str = "anthropic/claude-sonnet-4.5",
 ) -> dict:
     """Run one optimization step: analyze trajectory → LLM improves prompt.
 

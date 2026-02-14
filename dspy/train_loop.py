@@ -1,13 +1,13 @@
 """
 Iterative prompt optimization training loop with step + model curriculum.
 
-Step curriculum: starts at target=2 steps, advances by 3 after clearing.
+Step curriculum: starts at target=2 steps, advances by 5 after clearing.
 Model curriculum: cycles through models, resetting step target for each.
 Turn budget scales from 30 to 150 with diminishing increases (power curve).
 
 Two optimizers:
   - Direct LLM optimizer (every iteration): single LLM call via optimize.py
-  - DSPy GEPA optimizer (every 5 iterations): uses all trajectories with
+  - DSPy GEPA optimizer (every 5 iters): uses recent trajectories with
     LLM judge feedback for thorough prompt improvement via dspy_optimize.py
 
 Usage:
@@ -43,7 +43,7 @@ BROWSER_DATA_DIR = PROJECT_DIR / ".browser-data"
 
 SUBPROCESS_TIMEOUT = 3600  # 60 minutes
 MAX_STEPS = 30
-STEP_INCREMENT = 3
+STEP_INCREMENT = 5
 
 # Model curriculum: each model runs through the full step curriculum (2→30),
 # then we move to the next model and reset step target.
@@ -53,7 +53,7 @@ MODEL_CURRICULUM = [
 
 # DSPy GEPA runs every N iterations (expensive but thorough).
 # Between GEPA runs, the direct LLM optimizer handles each iteration.
-DSPY_INTERVAL = 3
+DSPY_INTERVAL = 5
 MIN_TRAJECTORIES_FOR_DSPY = 3
 
 
@@ -314,7 +314,7 @@ def run_model_phase(
 
 # ---- main ----
 
-def main(max_iterations: int = 50, initial_target: int = 2) -> None:
+def main(max_iterations: int = 100, initial_target: int = 2) -> None:
     PROMPT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -347,8 +347,8 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Iterative prompt optimization loop")
     parser.add_argument(
-        "--max-iterations", type=int, default=50,
-        help="Total iterations across all models (default: 50)",
+        "--max-iterations", type=int, default=100,
+        help="Total iterations across all models (default: 100)",
     )
     parser.add_argument(
         "--initial-target", type=int, default=2,

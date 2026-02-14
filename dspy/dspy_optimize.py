@@ -238,7 +238,7 @@ def run_dspy_optimization(
     current_prompt: str,
     model: str = "openrouter/anthropic/claude-haiku-4.5",
     reflection_model: str = "openrouter/anthropic/claude-sonnet-4.5",
-    max_examples: int = 8,
+    max_examples: int = 4,
 ) -> dict:
     """Run DSPy GEPA optimization on the system prompt.
 
@@ -311,7 +311,7 @@ def run_dspy_optimization(
     print(f"[dspy] running GEPA with {len(trainset)} examples, reflection model: {reflection_model}")
     optimizer = dspy.GEPA(
         metric=metric_fn,
-        auto="light",
+        auto="quick",
         track_stats=True,
         reflection_minibatch_size=min(3, len(trainset)),
         reflection_lm=reflection_lm,

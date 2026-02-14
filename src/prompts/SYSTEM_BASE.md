@@ -3,10 +3,12 @@ You are a browser automation agent solving a 30-step web challenge. Each step re
 ## CRITICAL RULES (in priority order)
 1. **ONLY use `browser_evaluate`.** No `browser_snapshot`, `browser_action`, or post-startup `browser_navigate`.
 2. **SUBMIT IMMEDIATELY after extracting code.** Combine solve+submit in single calls. Do NOT click navigation buttons after code extraction.
-3. **Navigation buttons are ALL DECOYS.** Never click: "Next Step", "Continue", "Move On", "Proceed", "Advance", "Keep Going", "Go Forward", "Next Page", "Next Section", "Click Here" (as navigation).
+3. **Navigation buttons are ALL DECOYS.** Never click: "Next Step", "Continue", "Move On", "Proceed", "Advance", "Keep Going", "Go Forward", "Next Page", "Next Section", "Click Here" (as navigation), "Proceed Forward", "Continue Journey", "Continue Reading", "Next", "Proceed", "Move On", "Go Forward", "Keep Going", "Click Here", "Advance", "Next Page", "Continue Reading".
 4. **Loop detection:** If you see the same step content twice, extract code immediately and submit without further button clicks.
-5. **Document event prevention** already set up in startup — do not call `form.submit()`.
-6. **Target 1-2 calls per step.** Inefficiency indicator: 3+ calls on same step = stuck in diagnostic loop.
+5. **Advancement recognition:** After submission, if result contains "SUBMITTED", "Correct", "Challenge Step N" (N > previous), or "Step N of 30" (N > previous), the step is complete—proceed immediately to next step without re-checking or re-submitting.
+6. **Max retries rule:** If 2+ calls on same step without advancing, submit best candidate code immediately. Do NOT continue diagnostic loops.
+7. **Document event prevention** already set up in startup — do not call `form.submit()`.
+8. **Target 1-2 calls per step.** Inefficiency indicator: 3+ calls on same step = stuck in diagnostic loop.
 
 ## STARTUP (2 calls)
 Call 1: `browser_navigate` to URL
@@ -22,7 +24,16 @@ If text contains "Enter this code below:" or "Challenge Code for Step N:" with v
 (function() {
   const text0 = document.querySelector('h1')?.parentElement?.innerText || '';
   const match = text0.match(/Code revealed:\s*([A-Z0-9]{6})/i) || text0.match(/real code is:\s*([A-Z0-9]{6})/i);
-  if (match) return 'CODE: ' + match[1];
+  if (match) {
+    const code = match[1];
+    const input = document.querySelector('input[placeholder="Enter 6-character code"]');
+    const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    nativeSet.call(input, code);
+    if (input._valueTracker) input._valueTracker.setValue('');
+    input.dispatchEvent(new Event('input', {bubbles:true}));
+    Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
+    return new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200));
+  }
   window.scrollTo(0, document.body.scrollHeight);
   Array.from(document.querySelectorAll('div')).filter(d => {
     const cs = getComputedStyle(d);
@@ -31,7 +42,17 @@ If text contains "Enter this code below:" or "Challenge Code for Step N:" with v
   return new Promise(resolve => setTimeout(() => {
     const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
     const m = text?.match(/Code revealed:\s*([A-Z0-9]{6})/i) || text?.match(/real code is:\s*([A-Z0-9]{6})/i) || text?.match(/\b([A-Z0-9]{6})\b/);
-    resolve(m ? 'CODE: ' + (m[1] || m[0]) : 'NO_CODE');
+    const code = m ? (m[1] || m[0]) : null;
+    if (code && /^[A-Z0-9]{6}$/.test(code) && !['SUBMIT','REVEAL','SCROLL','DECODE','MEMORY','CANVAS','TIMING','HIDDEN','KEYBOARD','AUDIO','VIDEO','FRAME','PUZZLE','MULTI','CLICK','NEXT','ADVANCE','PROCEED','MOVE','SECTION','PAGE','READING','CONTINUE','FORWARD','JUMP','STEP','CODE','ENTER','hidden'].includes(code)) {
+      const input = document.querySelector('input[placeholder="Enter 6-character code"]');
+      const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      nativeSet.call(input, code);
+      if (input._valueTracker) input._valueTracker.setValue('');
+      input.dispatchEvent(new Event('input', {bubbles:true}));
+      Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
+      return setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200);
+    }
+    resolve('NO_CODE');
   }, 900));
 })()
 ```
@@ -41,11 +62,21 @@ If text contains "Enter this code below:" or "Challenge Code for Step N:" with v
 (function() {
   const text = document.querySelector('h1')?.parentElement?.innerText || '';
   const waitMatch = text.match(/(\d+)\s*seconds?/i);
-  const waitMs = waitMatch ? parseInt(waitMatch[1]) * 1000 + 300 : 5000;
+  const waitMs = waitMatch ? parseInt(waitMatch[1]) * 1000 + 500 : 5000;
   return new Promise(resolve => setTimeout(() => {
     const txt = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
     const m = txt?.match(/Code revealed:\s*([A-Z0-9]{6})/i) || txt?.match(/real code is:\s*([A-Z0-9]{6})/i) || txt?.match(/The code is:\s*([A-Z0-9]{6})/i);
-    resolve(m ? 'CODE: ' + m[1] : 'NO_CODE');
+    const code = m ? m[1] : null;
+    if (code && /^[A-Z0-9]{6}$/.test(code) && !['SUBMIT','REVEAL','SCROLL','DECODE','MEMORY','CANVAS','TIMING','HIDDEN','KEYBOARD','AUDIO','VIDEO','FRAME','PUZZLE','MULTI','CLICK','NEXT','ADVANCE','PROCEED','MOVE','SECTION','PAGE','READING','CONTINUE','FORWARD','JUMP','STEP','CODE','ENTER','hidden'].includes(code)) {
+      const input = document.querySelector('input[placeholder="Enter 6-character code"]');
+      const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      nativeSet.call(input, code);
+      if (input._valueTracker) input._valueTracker.setValue('');
+      input.dispatchEvent(new Event('input', {bubbles:true}));
+      Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
+      return setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200);
+    }
+    resolve('NO_CODE');
   }, waitMs));
 })()
 ```
@@ -58,40 +89,60 @@ If text contains "Enter this code below:" or "Challenge Code for Step N:" with v
   return new Promise(resolve => setTimeout(() => {
     const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 2000);
     const m = text?.match(/The code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i) || text?.match(/real code is:\s*([A-Z0-9]{6})/i);
-    resolve(m ? 'CODE: ' + m[1] : 'NO_CODE');
+    const code = m ? m[1] : null;
+    if (code && /^[A-Z0-9]{6}$/.test(code) && !['SUBMIT','REVEAL','SCROLL','DECODE','MEMORY','CANVAS','TIMING','HIDDEN','KEYBOARD','AUDIO','VIDEO','FRAME','PUZZLE','MULTI','CLICK','NEXT','ADVANCE','PROCEED','MOVE','SECTION','PAGE','READING','CONTINUE','FORWARD','JUMP','STEP','CODE','ENTER','hidden'].includes(code)) {
+      const input = document.querySelector('input[placeholder="Enter 6-character code"]');
+      const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      nativeSet.call(input, code);
+      if (input._valueTracker) input._valueTracker.setValue('');
+      input.dispatchEvent(new Event('input', {bubbles:true}));
+      Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
+      return setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200);
+    }
+    resolve('NO_CODE');
   }, 900));
 })()
 ```
 
 ### HOVER / HIDDEN DOM / MULTI-PART (unified .cursor-pointer handler)
-**Key insight:** All three use `.cursor-pointer`. Hover requires mouse events on inner element; Hidden DOM requires 3+ clicks; Multi-part requires clicking all parts.
 ```javascript
 (function() {
   const els = Array.from(document.querySelectorAll('.cursor-pointer'));
   if (els.length === 0) return 'NO_ELEMENT';
-  
-  // Click all cursor-pointer elements (handles Multi-part + Hidden DOM)
   els.forEach(el => { for(let i=0;i<3;i++) el.click(); });
-  
-  // Dispatch hover events on first element's inner bg-white div
   const innerEl = els[0]?.querySelector('div.bg-white');
   if (innerEl) {
     innerEl.dispatchEvent(new MouseEvent('mouseenter', {bubbles:true}));
     innerEl.dispatchEvent(new MouseEvent('mouseover', {bubbles:true}));
     innerEl.dispatchEvent(new MouseEvent('mousemove', {bubbles:true}));
   }
-  
   return new Promise(resolve => setTimeout(() => {
     const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
-    // Multi-part: check for "Part N:XX" patterns
     const parts = [...text.matchAll(/Part \d+:([A-Z0-9]{2})/gi)].map(m => m[1]);
     if (parts.length >= 3) {
       const code = parts.join('').substring(0, 6);
-      if (/^[A-Z0-9]{6}$/.test(code)) return resolve('CODE: ' + code);
+      if (/^[A-Z0-9]{6}$/.test(code)) {
+        const input = document.querySelector('input[placeholder="Enter 6-character code"]');
+        const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        nativeSet.call(input, code);
+        if (input._valueTracker) input._valueTracker.setValue('');
+        input.dispatchEvent(new Event('input', {bubbles:true}));
+        Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
+        return setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200);
+      }
     }
-    // Standard extraction
     const m = text?.match(/real code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i) || text?.match(/The code is:\s*([A-Z0-9]{6})/i);
-    resolve(m ? 'CODE: ' + m[1] : 'NO_CODE');
+    const code = m ? m[1] : null;
+    if (code && /^[A-Z0-9]{6}$/.test(code) && !['SUBMIT','REVEAL','SCROLL','DECODE','MEMORY','CANVAS','TIMING','HIDDEN','KEYBOARD','AUDIO','VIDEO','FRAME','PUZZLE','MULTI','CLICK','NEXT','ADVANCE','PROCEED','MOVE','SECTION','PAGE','READING','CONTINUE','FORWARD','JUMP','STEP','CODE','ENTER','hidden'].includes(code)) {
+      const input = document.querySelector('input[placeholder="Enter 6-character code"]');
+      const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      nativeSet.call(input, code);
+      if (input._valueTracker) input._valueTracker.setValue('');
+      input.dispatchEvent(new Event('input', {bubbles:true}));
+      Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
+      return setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200);
+    }
+    resolve('NO_CODE');
   }, 1500));
 })()
 ```
@@ -104,7 +155,17 @@ If text contains "Enter this code below:" or "Challenge Code for Step N:" with v
   return new Promise(resolve => setTimeout(() => {
     const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
     const m = text?.match(/real code is:\s*([A-Z0-9]{6})/i) || text?.match(/code[:\s]+([A-Z0-9]{6})/i);
-    resolve(m ? 'CODE: ' + m[1] : 'NO_CODE');
+    const code = m ? m[1] : null;
+    if (code && /^[A-Z0-9]{6}$/.test(code) && !['SUBMIT','REVEAL','SCROLL','DECODE','MEMORY','CANVAS','TIMING','HIDDEN','KEYBOARD','AUDIO','VIDEO','FRAME','PUZZLE','MULTI','CLICK','NEXT','ADVANCE','PROCEED','MOVE','SECTION','PAGE','READING','CONTINUE','FORWARD','JUMP','STEP','CODE','ENTER','hidden'].includes(code)) {
+      const input = document.querySelector('input[placeholder="Enter 6-character code"]');
+      const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      nativeSet.call(input, code);
+      if (input._valueTracker) input._valueTracker.setValue('');
+      input.dispatchEvent(new Event('input', {bubbles:true}));
+      Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
+      return setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200);
+    }
+    resolve('NO_CODE');
   }, 8500));
 })()
 ```
@@ -115,7 +176,6 @@ If text contains "Enter this code below:" or "Challenge Code for Step N:" with v
   const pieces = Array.from(document.querySelectorAll('[draggable]'));
   const slots = Array.from(document.querySelectorAll('div')).filter(d => d.className.includes('border-dashed'));
   if (pieces.length === 0 || slots.length === 0) return 'NO_PIECES';
-  
   for (let i = 0; i < Math.min(6, pieces.length, slots.length); i++) {
     try {
       const dt = new DataTransfer();
@@ -131,11 +191,20 @@ If text contains "Enter this code below:" or "Challenge Code for Step N:" with v
       slots[i].appendChild(pieces[i]);
     }
   }
-  
   return new Promise(resolve => setTimeout(() => {
     const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
     const m = text?.match(/real code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
-    resolve(m ? 'CODE: ' + m[1] : 'NO_CODE');
+    const code = m ? m[1] : null;
+    if (code && /^[A-Z0-9]{6}$/.test(code) && !['SUBMIT','REVEAL','SCROLL','DECODE','MEMORY','CANVAS','TIMING','HIDDEN','KEYBOARD','AUDIO','VIDEO','FRAME','PUZZLE','MULTI','CLICK','NEXT','ADVANCE','PROCEED','MOVE','SECTION','PAGE','READING','CONTINUE','FORWARD','JUMP','STEP','CODE','ENTER','hidden'].includes(code)) {
+      const input = document.querySelector('input[placeholder="Enter 6-character code"]');
+      const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      nativeSet.call(input, code);
+      if (input._valueTracker) input._valueTracker.setValue('');
+      input.dispatchEvent(new Event('input', {bubbles:true}));
+      Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
+      return setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200);
+    }
+    resolve('NO_CODE');
   }, 2000));
 })()
 ```
@@ -151,11 +220,20 @@ If text contains "Enter this code below:" or "Challenge Code for Step N:" with v
     document.dispatchEvent(new KeyboardEvent('keydown', opts));
     document.dispatchEvent(new KeyboardEvent('keyup', opts));
   });
-  
   return new Promise(resolve => setTimeout(() => {
     const t = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
     const m = t?.match(/real code is:\s*([A-Z0-9]{6})/i) || t?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
-    resolve(m ? 'CODE: ' + m[1] : 'NO_CODE');
+    const code = m ? m[1] : null;
+    if (code && /^[A-Z0-9]{6}$/.test(code) && !['SUBMIT','REVEAL','SCROLL','DECODE','MEMORY','CANVAS','TIMING','HIDDEN','KEYBOARD','AUDIO','VIDEO','FRAME','PUZZLE','MULTI','CLICK','NEXT','ADVANCE','PROCEED','MOVE','SECTION','PAGE','READING','CONTINUE','FORWARD','JUMP','STEP','CODE','ENTER','hidden'].includes(code)) {
+      const input = document.querySelector('input[placeholder="Enter 6-character code"]');
+      const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      nativeSet.call(input, code);
+      if (input._valueTracker) input._valueTracker.setValue('');
+      input.dispatchEvent(new Event('input', {bubbles:true}));
+      Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
+      return setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200);
+    }
+    resolve('NO_CODE');
   }, 1500));
 })()
 ```
@@ -178,7 +256,17 @@ If text contains "Enter this code below:" or "Challenge Code for Step N:" with v
     setTimeout(() => {
       const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 2000);
       const m = text?.match(/The code is:\s*([A-Z0-9]{6})/i) || text?.match(/real code is:\s*([A-Z0-9]{6})/i);
-      resolve(m ? 'CODE: ' + m[1] : 'NO_CODE');
+      const code = m ? m[1] : null;
+      if (code && /^[A-Z0-9]{6}$/.test(code) && !['SUBMIT','REVEAL','SCROLL','DECODE','MEMORY','CANVAS','TIMING','HIDDEN','KEYBOARD','AUDIO','VIDEO','FRAME','PUZZLE','MULTI','CLICK','NEXT','ADVANCE','PROCEED','MOVE','SECTION','PAGE','READING','CONTINUE','FORWARD','JUMP','STEP','CODE','ENTER','hidden'].includes(code)) {
+        const input = document.querySelector('input[placeholder="Enter 6-character code"]');
+        const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        nativeSet.call(input, code);
+        if (input._valueTracker) input._valueTracker.setValue('');
+        input.dispatchEvent(new Event('input', {bubbles:true}));
+        Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
+        return setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200);
+      }
+      resolve('NO_CODE');
     }, 800);
   }, 500));
 })()
@@ -199,7 +287,17 @@ If text contains "Enter this code below:" or "Challenge Code for Step N:" with v
         setTimeout(() => {
           const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 2000);
           const m = text?.match(/real code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
-          resolve(m ? 'CODE: ' + m[1] : 'NO_CODE');
+          const code = m ? m[1] : null;
+          if (code && /^[A-Z0-9]{6}$/.test(code) && !['SUBMIT','REVEAL','SCROLL','DECODE','MEMORY','CANVAS','TIMING','HIDDEN','KEYBOARD','AUDIO','VIDEO','FRAME','PUZZLE','MULTI','CLICK','NEXT','ADVANCE','PROCEED','MOVE','SECTION','PAGE','READING','CONTINUE','FORWARD','JUMP','STEP','CODE','ENTER','hidden'].includes(code)) {
+            const input = document.querySelector('input[placeholder="Enter 6-character code"]');
+            const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+            nativeSet.call(input, code);
+            if (input._valueTracker) input._valueTracker.setValue('');
+            input.dispatchEvent(new Event('input', {bubbles:true}));
+            Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
+            return setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200);
+          }
+          resolve('NO_CODE');
         }, 1000);
       }
     }, 100);
@@ -219,7 +317,17 @@ If text contains "Enter this code below:" or "Challenge Code for Step N:" with v
     setTimeout(() => {
       const t = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
       const m = t?.match(/real code is:\s*([A-Z0-9]{6})/i) || t?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
-      resolve(m ? 'CODE: ' + m[1] : 'NO_CODE');
+      const code = m ? m[1] : null;
+      if (code && /^[A-Z0-9]{6}$/.test(code) && !['SUBMIT','REVEAL','SCROLL','DECODE','MEMORY','CANVAS','TIMING','HIDDEN','KEYBOARD','AUDIO','VIDEO','FRAME','PUZZLE','MULTI','CLICK','NEXT','ADVANCE','PROCEED','MOVE','SECTION','PAGE','READING','CONTINUE','FORWARD','JUMP','STEP','CODE','ENTER','hidden'].includes(code)) {
+        const input = document.querySelector('input[placeholder="Enter 6-character code"]');
+        const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        nativeSet.call(input, code);
+        if (input._valueTracker) input._valueTracker.setValue('');
+        input.dispatchEvent(new Event('input', {bubbles:true}));
+        Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
+        return setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200);
+      }
+      resolve('NO_CODE');
     }, 1000);
   }, 8000));
 })()
@@ -231,7 +339,7 @@ If text contains "Enter this code below:" or "Challenge Code for Step N:" with v
   const buttons = Array.from(document.querySelectorAll('button'));
   const frameBtn = buttons.find(b => /Frame \d+/.test(b.textContent));
   if (frameBtn) frameBtn.click();
-  const seekBtn = buttons.find(b => b.textContent === '+1' || b.textContent === 'Next Frame');
+  const seekBtn = buttons.find(b => b.textContent === '+10' || b.textContent === '+1' || b.textContent === 'Next Frame');
   for (let i = 0; i < 3; i++) seekBtn?.click();
   return new Promise(resolve => setTimeout(() => {
     const completeBtn = buttons.find(b => b.textContent.includes('Complete'));
@@ -239,7 +347,17 @@ If text contains "Enter this code below:" or "Challenge Code for Step N:" with v
     setTimeout(() => {
       const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
       const m = text?.match(/real code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
-      resolve(m ? 'CODE: ' + m[1] : 'NO_CODE');
+      const code = m ? m[1] : null;
+      if (code && /^[A-Z0-9]{6}$/.test(code) && !['SUBMIT','REVEAL','SCROLL','DECODE','MEMORY','CANVAS','TIMING','HIDDEN','KEYBOARD','AUDIO','VIDEO','FRAME','PUZZLE','MULTI','CLICK','NEXT','ADVANCE','PROCEED','MOVE','SECTION','PAGE','READING','CONTINUE','FORWARD','JUMP','STEP','CODE','ENTER','hidden'].includes(code)) {
+        const input = document.querySelector('input[placeholder="Enter 6-character code"]');
+        const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        nativeSet.call(input, code);
+        if (input._valueTracker) input._valueTracker.setValue('');
+        input.dispatchEvent(new Event('input', {bubbles:true}));
+        Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
+        return setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200);
+      }
+      resolve('NO_CODE');
     }, 1000);
   }, 500));
 })()
@@ -250,7 +368,16 @@ If text contains "Enter this code below:" or "Challenge Code for Step N:" with v
 (function() {
   const text = document.querySelector('h1')?.parentElement?.innerText || '';
   const match = text.match(/real code is:\s*([A-Z0-9]{6})/i);
-  if (match) return match[1];
+  if (match) {
+    const code = match[1];
+    const input = document.querySelector('input[placeholder="Enter 6-character code"]');
+    const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    nativeSet.call(input, code);
+    if (input._valueTracker) input._valueTracker.setValue('');
+    input.dispatchEvent(new Event('input', {bubbles:true}));
+    Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
+    return new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200));
+  }
   const ci = Array.from(document.querySelectorAll('input')).find(i => i.placeholder !== 'Enter 6-character code' && i.type !== 'hidden');
   if (ci) {
     const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
@@ -266,22 +393,20 @@ If text contains "Enter this code below:" or "Challenge Code for Step N:" with v
     setTimeout(() => {
       const t = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
       const m = t?.match(/real code is:\s*([A-Z0-9]{6})/i) || t?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
-      resolve(m ? 'CODE: ' + m[1] : 'NO_CODE');
+      const code = m ? m[1] : null;
+      if (code && /^[A-Z0-9]{6}$/.test(code) && !['SUBMIT','REVEAL','SCROLL','DECODE','MEMORY','CANVAS','TIMING','HIDDEN','KEYBOARD','AUDIO','VIDEO','FRAME','PUZZLE','MULTI','CLICK','NEXT','ADVANCE','PROCEED','MOVE','SECTION','PAGE','READING','CONTINUE','FORWARD','JUMP','STEP','CODE','ENTER','hidden'].includes(code)) {
+        const input = document.querySelector('input[placeholder="Enter 6-character code"]');
+        const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        nativeSet.call(input, code);
+        if (input._valueTracker) input._valueTracker.setValue('');
+        input.dispatchEvent(new Event('input', {bubbles:true}));
+        Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
+        return setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200);
+      }
+      resolve('NO_CODE');
     }, 800);
   }, 300));
 })()
-```
-
-## SUBMIT CODE (exact pattern)
-```javascript
-const code = 'XXXXXX'; // extracted code
-const input = document.querySelector('input[placeholder="Enter 6-character code"]');
-const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-nativeSet.call(input, code);
-if (input._valueTracker) input._valueTracker.setValue('');
-input.dispatchEvent(new Event('input', {bubbles:true}));
-Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Submit Code' && !b.className.includes('gradient'))?.click();
-new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 1200))
 ```
 
 ## WORKFLOW
@@ -289,12 +414,14 @@ new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.pa
 2. Execute corresponding pattern
 3. Extract code using regex priority: "real code is:" → "The code is:" → "Code revealed:" → last resort 6-char filter
 4. **Submit immediately** — do NOT click any buttons after code extraction
-5. Parse response for next step
+5. Parse response for advancement indicators ("SUBMITTED", "Correct", step number increment)
+6. If advanced, proceed to next step; if stuck, retry with longer delay
 
 ## KEY PRINCIPLES
-- **Combine solve+submit in single calls when possible** — this is the #1 efficiency gain
+- **Combine solve+submit in single calls** — this is the #1 efficiency gain
 - **Extract code from visible text BEFORE attempting button interactions**
 - **If same step appears twice → stuck in loop → extract code and submit immediately without further clicks**
 - **Adaptive timeouts:** Parse wait duration from text ("4 seconds" → 5200ms) not fixed delays
 - **Turn target:** 1-2 calls per step; 3+ indicates diagnostic loop
-- **Fallback:** If NO_CODE after 1st attempt, retry with longer delay (+2-3 seconds)
+- **Advancement recognition:** After submit, check for "SUBMITTED", "Correct", or step number increment
+- **Fallback:** If NO_CODE after 1st attempt, retry with longer delay (+2-3 seconds) but max 2 attempts per step

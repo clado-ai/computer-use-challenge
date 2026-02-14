@@ -51,6 +51,9 @@ class PromptImprover(dspy.Signature):
     trajectory_analysis = dspy.InputField(
         desc="Analysis of the agent's recent run: per-step tool calls, errors, successes, and metrics"
     )
+    prompt_history = dspy.InputField(
+        desc="History of previous prompts and their trajectory results (most recent first). Shows what was tried before and how it performed."
+    )
     current_prompt = dspy.InputField(
         desc="The current system prompt the agent uses"
     )
@@ -87,9 +90,10 @@ class PromptOptimizerModule(dspy.Module):
     def __init__(self):
         self.improve = dspy.Predict(PromptImprover)
 
-    def forward(self, trajectory_analysis: str, current_prompt: str) -> dspy.Prediction:
+    def forward(self, trajectory_analysis: str, prompt_history: str, current_prompt: str) -> dspy.Prediction:
         result = self.improve(
             trajectory_analysis=trajectory_analysis,
+            prompt_history=prompt_history,
             current_prompt=current_prompt,
         )
         return dspy.Prediction(improved_prompt=result.improved_prompt.strip())
@@ -106,11 +110,14 @@ def make_prompt_metric(judge_lm):
         improved = pred.improved_prompt
         trajectory = gold.trajectory_analysis
         current = gold.current_prompt
+        history = gold.prompt_history
 
         eval_context = (
+            f"PROMPT HISTORY (previous attempts and results):\n"
+            f"{history[:12000]}\n\n"
             f"TRAJECTORY ANALYSIS (what happened during the agent's run):\n"
             f"{trajectory[:8000]}\n\n"
-            f"ORIGINAL PROMPT:\n"
+            f"CURRENT PROMPT:\n"
             f"{current}\n\n"
             f"IMPROVED PROMPT:\n"
             f"{improved}\n\n"
@@ -158,11 +165,104 @@ def make_prompt_metric(judge_lm):
     return metric
 
 
+# ---- Prompt History ----
+
+PROMPT_HISTORY_DIR = SCRIPT_DIR / "prompt_history"
+
+
+def build_prompt_history(runs_dir: Path, num_entries: int = 3) -> str:
+    """Build a history of previous prompts and their trajectory results.
+
+    Pairs prompt backups with their closest trajectory by timestamp.
+    Returns a formatted string showing what was tried and how it performed.
+    """
+    from optimize import analyze_trajectories
+
+    if not PROMPT_HISTORY_DIR.exists():
+        return "No prompt history available yet."
+
+    # Get most recent prompt backups
+    prompt_files = sorted(
+        PROMPT_HISTORY_DIR.glob("SYSTEM_iter*.md"),
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )[:num_entries]
+
+    if not prompt_files:
+        return "No prompt history available yet."
+
+    # Get all trajectories sorted by time
+    trajectory_files = sorted(
+        runs_dir.glob("trajectory_*.json"),
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )
+
+    # Get all run metrics sorted by time
+    run_files = sorted(
+        runs_dir.glob("run_*.json"),
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )
+
+    parts = []
+    for i, pf in enumerate(prompt_files):
+        prompt_text = pf.read_text()
+        pf_time = pf.stat().st_mtime
+
+        # Find the trajectory closest in time (created after this prompt)
+        matched_trajectory = None
+        for tf in trajectory_files:
+            if tf.stat().st_mtime >= pf_time:
+                matched_trajectory = tf
+            else:
+                break
+
+        # Find matching run metrics
+        matched_run = None
+        for rf in run_files:
+            if rf.stat().st_mtime >= pf_time:
+                matched_run = rf
+            else:
+                break
+
+        # Build entry
+        parts.append(f"=== PROMPT VERSION {i+1} (from {pf.name}) ===")
+
+        # Add run metrics if available
+        if matched_run:
+            try:
+                metrics = json.loads(matched_run.read_text())
+                steps = metrics.get("stepsCompleted", "?")
+                calls = metrics.get("totalApiCalls", "?")
+                cost = metrics.get("totalCost", "?")
+                parts.append(f"RESULT: {steps}/30 steps, {calls} api calls, ${cost}")
+            except Exception:
+                pass
+
+        # Add trajectory analysis if available
+        if matched_trajectory:
+            try:
+                analysis = analyze_trajectories([matched_trajectory], [])
+                # Show truncated analysis
+                if len(analysis) > 8000:
+                    analysis = analysis[:8000] + "\n... (truncated)"
+                parts.append(f"TRAJECTORY:\n{analysis}")
+            except Exception:
+                pass
+
+        parts.append(f"PROMPT:\n{prompt_text}")
+        parts.append("")
+
+    return "\n".join(parts)
+
+
 # ---- Training Data ----
 
 def build_trainset(
     runs_dir: Path,
     current_prompt: str,
+    prompt_history: str,
     max_examples: int = 8,
 ) -> list[dspy.Example]:
     """Build DSPy training set from trajectory files in runs/."""
@@ -188,8 +288,9 @@ def build_trainset(
 
             example = dspy.Example(
                 trajectory_analysis=analysis,
+                prompt_history=prompt_history,
                 current_prompt=current_prompt,
-            ).with_inputs("trajectory_analysis", "current_prompt")
+            ).with_inputs("trajectory_analysis", "prompt_history", "current_prompt")
             trainset.append(example)
         except Exception as e:
             print(f"[dspy] skipping {tf.name}: {e}")
@@ -282,8 +383,12 @@ def run_dspy_optimization(
 
     dspy.configure(lm=main_lm)
 
+    # Build prompt history from last 3 iterations
+    prompt_history = build_prompt_history(runs_dir, num_entries=3)
+    print(f"[dspy] prompt history: {len(prompt_history)} chars")
+
     # Build training data from trajectories
-    trainset = build_trainset(runs_dir, current_prompt, max_examples)
+    trainset = build_trainset(runs_dir, current_prompt, prompt_history, max_examples)
     if not trainset:
         print("[dspy] no training data available, skipping GEPA")
         return {"optimized_prompt": current_prompt, "stats": {"error": "no training data"}}
@@ -326,6 +431,7 @@ def run_dspy_optimization(
     # Generate improved prompt using compiled module on latest trajectory
     result = compiled(
         trajectory_analysis=trainset[0].trajectory_analysis,
+        prompt_history=prompt_history,
         current_prompt=current_prompt,
     )
 

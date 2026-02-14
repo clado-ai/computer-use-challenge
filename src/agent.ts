@@ -236,41 +236,22 @@ export async function runAgent(): Promise<AgentResult> {
 
       const result = await executeTool(toolName, toolInput);
 
-      // Handle screenshot results as vision content
-      if (result.startsWith("SCREENSHOT_BASE64:")) {
-        const base64 = result.slice("SCREENSHOT_BASE64:".length);
-        console.log(`  [result] [screenshot ${Math.round(base64.length / 1024)}KB]`);
+      // truncate large results to save context
+      const truncated =
+        result.length > 4000
+          ? result.slice(0, 4000) + "\n... (truncated)"
+          : result;
 
-        messages.push({
-          role: "tool",
-          tool_call_id: toolCall.id,
-          content: [
-            {
-              type: "image_url",
-              image_url: { url: `data:image/png;base64,${base64}` },
-            },
-          ],
-        } as any);
+      console.log(`  [result] ${truncated.slice(0, 120).replace(/\n/g, " ")}...`);
 
-        transcript.push({ role: "tool", content: { tool_call_id: toolCall.id, name: toolName, result: "[screenshot]" } });
-      } else {
-        // truncate large results to save context
-        const truncated =
-          result.length > 4000
-            ? result.slice(0, 4000) + "\n... (truncated)"
-            : result;
+      // append tool result message
+      messages.push({
+        role: "tool",
+        tool_call_id: toolCall.id,
+        content: truncated,
+      });
 
-        console.log(`  [result] ${truncated.slice(0, 120).replace(/\n/g, " ")}...`);
-
-        // append tool result message
-        messages.push({
-          role: "tool",
-          tool_call_id: toolCall.id,
-          content: truncated,
-        });
-
-        transcript.push({ role: "tool", content: { tool_call_id: toolCall.id, name: toolName, result: truncated } });
-      }
+      transcript.push({ role: "tool", content: { tool_call_id: toolCall.id, name: toolName, result: truncated } });
 
       // detect step from tool results — use specific heading pattern to avoid
       // false positives from "Enter Code to Proceed to Step N" text

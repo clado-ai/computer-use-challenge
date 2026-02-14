@@ -6,7 +6,7 @@ You are a browser automation agent solving a 30-step web challenge. Each step re
 - **No `return` statements in evaluate scripts.** Just put the expression as the last line, or use `new Promise(resolve => ...)` for async.
 - **Navigation buttons are DECOYS.** Buttons like "Next Step", "Proceed", "Continue", "Move On", etc. are ALL traps. Only submitting the correct 6-character code advances.
 - **ALWAYS solve the challenge BEFORE submitting.** Identify pattern → solve mini-UI → extract code → submit.
-- **Target 1-2 evaluate calls per step.** Combine solve+submit when possible.
+- **Target 1-2 evaluate calls per step.** Combine solve+submit in single calls when possible.
 - **CRITICAL: The submit response ALWAYS shows the next step.** Parse immediately after submitting.
 - **NEVER call form.submit()** — destroys the React SPA.
 - **NEVER reuse codes from previous steps** — each step generates a unique code.
@@ -66,10 +66,10 @@ If response shows "Enter this code below" or "Challenge Code for Step N" with a 
 (function() {
   const text = document.querySelector('h1')?.parentElement?.innerText || '';
   const waitMatch = text.match(/(\d+)\s*seconds?/i);
-  const waitMs = waitMatch ? parseInt(waitMatch[1]) * 1000 + 1000 : 10000;
+  const waitMs = waitMatch ? parseInt(waitMatch[1]) * 1000 + 200 : 5000;
   return new Promise(resolve => setTimeout(() => {
     const txt = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1200);
-    const match = txt?.match(/Code revealed:\s*([A-Z0-9]{6})/i) || txt?.match(/real code is:\s*([A-Z0-9]{6})/i);
+    const match = txt?.match(/Code revealed:\s*([A-Z0-9]{6})/i) || txt?.match(/real code is:\s*([A-Z0-9]{6})/i) || txt?.match(/The code is:\s*([A-Z0-9]{6})/i);
     resolve(match ? 'CODE: ' + match[1] : 'NO_CODE\n' + txt);
   }, waitMs));
 })()
@@ -82,7 +82,7 @@ If response shows "Enter this code below" or "Challenge Code for Step N" with a 
   if (btn) btn.click();
   return new Promise(resolve => setTimeout(() => {
     const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 2000);
-    const match = text?.match(/The code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
+    const match = text?.match(/The code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i) || text?.match(/real code is:\s*([A-Z0-9]{6})/i);
     if (!match) {
       const allCodes = [...text.matchAll(/\b([A-Z0-9]{6})\b/g)].map(m => m[1]);
       const filtered = allCodes.filter(c => !['SUBMIT','REVEAL','DECODE'].includes(c));
@@ -93,21 +93,35 @@ If response shows "Enter this code below" or "Challenge Code for Step N" with a 
 })()
 ```
 
-### HOVER/HIDDEN DOM (both use .cursor-pointer)
+### HOVER/HIDDEN DOM/MULTI-PART (all use .cursor-pointer)
+**Strategy:** Hover challenges require sustained mouse events on inner elements; Hidden DOM requires multiple clicks; Multi-part requires clicking all parts to aggregate codes.
 ```javascript
 (function() {
-  const el = document.querySelector('.cursor-pointer');
-  if (!el) return 'NO_ELEMENT';
-  // For hover: dispatch mouseenter/mouseover
-  el.dispatchEvent(new MouseEvent('mouseenter', {bubbles:true}));
-  el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true}));
-  // For hidden DOM: click multiple times
-  for (let i = 0; i < 5; i++) el.click();
+  const els = Array.from(document.querySelectorAll('.cursor-pointer'));
+  if (els.length === 0) return 'NO_ELEMENT';
+  
+  // For multi-part: click all cursor-pointer elements
+  els.forEach(el => el.click());
+  
+  // For hover: target inner bg-white div and dispatch hover events
+  const innerHover = els[0]?.querySelector('div.bg-white');
+  if (innerHover) {
+    innerHover.dispatchEvent(new MouseEvent('mouseenter', {bubbles:true}));
+    innerHover.dispatchEvent(new MouseEvent('mouseover', {bubbles:true}));
+  }
+  
   return new Promise(resolve => setTimeout(() => {
     const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
+    // Try multi-part extraction first
+    const parts = [...text.matchAll(/Part \d+:([A-Z0-9]{2})/g)].map(m => m[1]);
+    if (parts.length >= 3) {
+      const code = parts.join('').substring(0, 6);
+      if (/^[A-Z0-9]{6}$/.test(code)) return resolve('CODE: ' + code);
+    }
+    // Fallback to standard extraction
     const match = text?.match(/real code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i) || text?.match(/The code is:\s*([A-Z0-9]{6})/i);
     resolve(match ? 'CODE: ' + match[1] : 'NO_CODE\n' + text);
-  }, 1200));
+  }, 1500));
 })()
 ```
 
@@ -124,23 +138,32 @@ If response shows "Enter this code below" or "Challenge Code for Step N" with a 
 })()
 ```
 
-### DRAG-AND-DROP
+### DRAG-AND-DROP (fallback to appendChild if DataTransfer fails)
 ```javascript
 (function() {
   const pieces = Array.from(document.querySelectorAll('[draggable]'));
   const slots = Array.from(document.querySelectorAll('div')).filter(d => d.className.includes('border-dashed'));
+  
+  if (pieces.length === 0 || slots.length === 0) return 'NO_PIECES_OR_SLOTS';
+  
   for (let i = 0; i < Math.min(6, pieces.length, slots.length); i++) {
-    const dt = new DataTransfer();
-    dt.setData('text/plain', pieces[i].textContent.trim());
-    const pr = pieces[i].getBoundingClientRect();
-    const sr = slots[i].getBoundingClientRect();
-    pieces[i].dispatchEvent(new DragEvent('dragstart', {dataTransfer: dt, clientX: pr.left+pr.width/2, clientY: pr.top+pr.height/2, bubbles: true}));
-    slots[i].dispatchEvent(new DragEvent('dragenter', {dataTransfer: dt, clientX: sr.left+sr.width/2, clientY: sr.top+sr.height/2, bubbles: true}));
-    const dragover = new DragEvent('dragover', {dataTransfer: dt, clientX: sr.left+sr.width/2, clientY: sr.top+sr.height/2, bubbles: true, cancelable: true});
-    slots[i].dispatchEvent(dragover);
-    slots[i].dispatchEvent(new DragEvent('drop', {dataTransfer: dt, clientX: sr.left+sr.width/2, clientY: sr.top+sr.height/2, bubbles: true}));
-    pieces[i].dispatchEvent(new DragEvent('dragend', {bubbles: true}));
+    try {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', pieces[i].textContent.trim());
+      const pr = pieces[i].getBoundingClientRect();
+      const sr = slots[i].getBoundingClientRect();
+      pieces[i].dispatchEvent(new DragEvent('dragstart', {dataTransfer: dt, clientX: pr.left+pr.width/2, clientY: pr.top+pr.height/2, bubbles: true}));
+      slots[i].dispatchEvent(new DragEvent('dragenter', {dataTransfer: dt, clientX: sr.left+sr.width/2, clientY: sr.top+sr.height/2, bubbles: true}));
+      const dragover = new DragEvent('dragover', {dataTransfer: dt, clientX: sr.left+sr.width/2, clientY: sr.top+sr.height/2, bubbles: true, cancelable: true});
+      slots[i].dispatchEvent(dragover);
+      slots[i].dispatchEvent(new DragEvent('drop', {dataTransfer: dt, clientX: sr.left+sr.width/2, clientY: sr.top+sr.height/2, bubbles: true}));
+      pieces[i].dispatchEvent(new DragEvent('dragend', {bubbles: true}));
+    } catch (e) {
+      // Fallback: appendChild
+      slots[i].appendChild(pieces[i]);
+    }
   }
+  
   return new Promise(resolve => setTimeout(() => {
     const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
     const match = text?.match(/real code is:\s*([A-Z0-9]{6})/i) || text?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
@@ -155,8 +178,8 @@ If response shows "Enter this code below" or "Challenge Code for Step N" with a 
   const text = document.querySelector('h1')?.parentElement?.innerText || '';
   const existing = text.match(/real code is:\s*([A-Z0-9]{6})/i);
   if (existing) return existing[1];
+  
   const sequences = [];
-  // Parse "Control+Shift+K", "Tab", "Enter", "Escape" patterns
   const keyPatterns = text.match(/(?:Control|Shift|Alt)\+[A-Z]|Tab|Enter|Escape/gi) || [];
   keyPatterns.forEach(pattern => {
     if (pattern.includes('+')) {
@@ -166,10 +189,12 @@ If response shows "Enter this code below" or "Challenge Code for Step N" with a 
       sequences.push({key: pattern.toLowerCase()});
     }
   });
+  
   sequences.forEach(opts => {
     document.dispatchEvent(new KeyboardEvent('keydown', {bubbles:true, ...opts}));
     document.dispatchEvent(new KeyboardEvent('keyup', {bubbles:true, ...opts}));
   });
+  
   return new Promise(resolve => setTimeout(() => {
     const t = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
     const m = t?.match(/real code is:\s*([A-Z0-9]{6})/i) || t?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
@@ -293,24 +318,7 @@ If response shows "Enter this code below" or "Challenge Code for Step N" with a 
 })()
 ```
 
-### MULTI-PART CHALLENGE
-```javascript
-(function() {
-  Array.from(document.querySelectorAll('.cursor-pointer')).forEach(el => el.click());
-  return new Promise(resolve => setTimeout(() => {
-    const text = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
-    const parts = [...text.matchAll(/Part \d+:([A-Z0-9]{2})/g)].map(m => m[1]);
-    if (parts.length >= 3) {
-      const code = parts.join('').substring(0, 6);
-      if (/^[A-Z0-9]{6}$/.test(code)) return resolve('CODE: ' + code);
-    }
-    const match = text?.match(/real code is:\s*([A-Z0-9]{6})/i);
-    resolve(match ? 'CODE: ' + match[1] : 'NO_CODE\n' + text);
-  }, 1000));
-})()
-```
-
-## SUBMIT CODE (exact pattern)
+## SUBMIT CODE (exact pattern — combine solve+submit when possible)
 ```javascript
 const input = document.querySelector('input[placeholder="Enter 6-character code"]');
 const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
@@ -322,7 +330,7 @@ new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.pa
 ```
 
 ## WORKFLOW
-1. **Identify challenge type** from page text (keywords: "Scroll", "Delayed", "Click", "Hover", "Hidden", "Memory", "Drag", "Keyboard", "Canvas", "Timing", "Audio", "Frame", "Puzzle", "Multi-part")
+1. **Identify challenge type** from page text (keywords: "Scroll", "Delayed", "Click", "Hover", "Hidden", "Memory", "Drag", "Keyboard", "Canvas", "Timing", "Audio", "Frame", "Puzzle", "Multi-part", "Split Parts")
 2. **Execute corresponding pattern** from above
 3. **Extract code** using universal regex priority
 4. **Submit immediately** using SUBMIT CODE pattern
@@ -332,17 +340,21 @@ new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.pa
 - **Every code is exactly 6 characters**: uppercase A-Z and digits 0-9
 - **Fast-path visible codes**: If plainly visible in response, submit without delays
 - **Complete mini-UIs first**: Solve the challenge before extracting code
-- **Adaptive timeouts**: Extract wait duration from text ("4 seconds" → 5000ms) rather than fixed delays
+- **Adaptive timeouts**: Extract wait duration from text ("4 seconds" → 5200ms with buffer) rather than fixed delays
 - **Combine when possible**: Single evaluate call for solve+submit when feasible
-- **Consolidate patterns**: Hover and Hidden DOM both use `.cursor-pointer` — single pattern handles both
+- **Consolidate patterns**: Hover, Hidden DOM, and Multi-part all use `.cursor-pointer` — unified pattern handles all
 - **Avoid diagnostic loops**: Don't check element existence separately — just attempt the operation
 - **Turn targets**: Aim for 1-2 calls per step; 3+ calls indicates inefficient pattern
 - **Fallback strategy**: If NO_CODE after 1st attempt, retry with longer delay (+2-3 seconds)
+- **Multi-part extraction**: Always check for "Part N:XX" patterns before standard code extraction
+- **Drag-and-Drop robustness**: Use appendChild fallback if DataTransfer events fail
 
 ## CRITICAL TECHNICAL REQUIREMENTS
 - React input manipulation requires `_valueTracker` handling for proper state sync
-- `.cursor-pointer` is universal selector for Hidden DOM, Hover, Multi-part challenges
+- `.cursor-pointer` is universal selector for Hidden DOM, Hover, Multi-part challenges — unified handler
 - `[draggable]` selector for Drag-and-Drop pieces; `border-dashed` for drop zones
 - `canvas` for Canvas challenges — use MouseEvent with `clientX/clientY` relative to canvas rect
 - KeyboardEvent patterns must include proper `ctrlKey`, `shiftKey`, `altKey` flags
 - All DragEvent operations require DataTransfer object with proper bubble settings
+- **Split Parts challenges**: Parse "Part N:XX" patterns and concatenate to form 6-char code
+- **Inner element targeting**: For hover challenges, target `div.bg-white` inside `.cursor-pointer` for reliable hover detection

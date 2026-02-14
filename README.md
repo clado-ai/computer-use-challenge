@@ -52,10 +52,7 @@ HEADLESS=false bun run start
 ## Output
 
 Results are saved to `runs/` after every completed step:
-
 - `trajectory_<timestamp>.json` — full transcript (updated incrementally after each step)
-- `run_<timestamp>.json` — metrics summary (tokens, cost, timing)
-- `transcript_<timestamp>.json` — final transcript
 
 ## Architecture
 

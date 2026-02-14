@@ -311,7 +311,7 @@ def run_dspy_optimization(
     print(f"[dspy] running GEPA with {len(trainset)} examples, reflection model: {reflection_model}")
     optimizer = dspy.GEPA(
         metric=metric_fn,
-        auto="quick",
+        num_iterations=20,
         track_stats=True,
         reflection_minibatch_size=min(3, len(trainset)),
         reflection_lm=reflection_lm,

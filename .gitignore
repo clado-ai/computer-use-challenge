@@ -14,5 +14,6 @@ __pycache__/
 # training loop
 dspy/iterations/
 dspy/prompt_history/
+dspy/dspy_prompts/
 dspy/training_state.json
 dspy/.venv/

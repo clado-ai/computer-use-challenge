@@ -179,9 +179,6 @@ def analyze_trajectories(
 
     return "\n".join(parts)
 
-
-# ---- DSPy Signatures ----
-
 class PromptImprover(dspy.Signature):
     """Improve a browser automation agent's system prompt based on trajectory analysis.
 
@@ -235,9 +232,6 @@ class PromptJudge(dspy.Signature):
         )
     )
 
-
-# ---- Module ----
-
 class PromptOptimizerModule(dspy.Module):
     """Generates an improved system prompt from trajectory analysis."""
 
@@ -252,8 +246,6 @@ class PromptOptimizerModule(dspy.Module):
         )
         return dspy.Prediction(improved_prompt=result.improved_prompt.strip())
 
-
-# ---- Metric with LLM Judge Feedback ----
 
 def make_prompt_metric(judge_lm):
     """Create a metric that uses an LLM judge with rich feedback for GEPA."""
@@ -312,8 +304,6 @@ def make_prompt_metric(judge_lm):
 
     return metric
 
-
-# ---- Prompt History ----
 
 def build_prompt_history(runs_dir: Path, num_entries: int = 3) -> str:
     """Build a history of previous prompts and their trajectory results.
@@ -390,46 +380,45 @@ def build_prompt_history(runs_dir: Path, num_entries: int = 3) -> str:
     return "\n".join(parts)
 
 
-# ---- Training Data ----
-
 def build_trainset(
     runs_dir: Path,
     current_prompt: str,
     prompt_history: str,
-    max_examples: int = 8,
+    num_trajectories: int = 3,
 ) -> list[dspy.Example]:
-    """Build DSPy training set from trajectory files in runs/."""
+    """Build a single-example trainset combining the most recent trajectories."""
     transcript_files = sorted(
         runs_dir.glob("trajectory_*.json"),
         key=lambda f: f.stat().st_mtime,
         reverse=True,
-    )[:max_examples]
+    )[:num_trajectories]
 
-    trainset = []
+    analyses = []
     for tf in transcript_files:
         try:
             analysis = analyze_trajectories([tf], [])
-            if len(analysis) < 200:
-                continue
-
-            if len(analysis) > 50000:
-                analysis = analysis[:50000] + "\n... (truncated)"
-
-            example = dspy.Example(
-                trajectory_analysis=analysis,
-                prompt_history=prompt_history,
-                current_prompt=current_prompt,
-            ).with_inputs("trajectory_analysis", "prompt_history", "current_prompt")
-            trainset.append(example)
+            if len(analysis) >= 200:
+                analyses.append(f"=== {tf.name} ===\n{analysis}")
         except Exception as e:
             print(f"[optimize] skipping {tf.name}: {e}")
-            continue
 
-    print(f"[optimize] built trainset with {len(trainset)} examples from {len(transcript_files)} files")
-    return trainset
+    if not analyses:
+        print("[optimize] no usable trajectories found")
+        return []
 
+    combined = "\n\n".join(analyses)
+    if len(combined) > 100000:
+        combined = combined[:100000] + "\n... (truncated)"
 
-# ---- Prompt Extraction ----
+    print(f"[optimize] combined {len(analyses)} trajectories ({len(combined)} chars)")
+
+    example = dspy.Example(
+        trajectory_analysis=combined,
+        prompt_history=prompt_history,
+        current_prompt=current_prompt,
+    ).with_inputs("trajectory_analysis", "prompt_history", "current_prompt")
+    return [example]
+
 
 def _extract_instructions(program: PromptOptimizerModule) -> str | None:
     """Extract optimized instructions from a compiled program."""
@@ -455,30 +444,17 @@ def save_optimized_prompt(prompt: str, tag: str = "") -> Path:
     return path
 
 
-# ---- Main Optimization ----
-
 def run_optimization(
     runs_dir: Path,
     current_prompt: str,
     model: str = "openrouter/anthropic/claude-haiku-4.5",
     reflection_model: str = "openrouter/anthropic/claude-sonnet-4.5",
-    max_examples: int = 2,
 ) -> dict:
     """Run DSPy GEPA optimization on the system prompt.
 
-    Builds a training set from trajectory files, defines an LLM-judge metric
-    with rich feedback, and runs GEPA to optimize the prompt improver's
-    instructions. Then uses the compiled module to produce an improved prompt.
-
-    Args:
-        runs_dir: Directory containing trajectory_*.json files.
-        current_prompt: Current SYSTEM_BASE.md content.
-        model: DSPy LM model for generation and judging.
-        reflection_model: DSPy LM model for GEPA reflection.
-        max_examples: Max trajectory files to use.
-
-    Returns:
-        {"optimized_prompt": str, "stats": dict}
+    Combines the 3 most recent trajectories into a single example so the
+    PromptImprover sees all runs at once. GEPA then optimizes the improver's
+    instructions via judge feedback and reflection.
     """
     try:
         import dotenv
@@ -514,7 +490,7 @@ def run_optimization(
     prompt_history = build_prompt_history(runs_dir, num_entries=3)
     print(f"[optimize] prompt history: {len(prompt_history)} chars")
 
-    trainset = build_trainset(runs_dir, current_prompt, prompt_history, max_examples)
+    trainset = build_trainset(runs_dir, current_prompt, prompt_history)
     if not trainset:
         print("[optimize] no training data available, skipping GEPA")
         return {"optimized_prompt": current_prompt, "stats": {"error": "no training data"}}
@@ -535,7 +511,7 @@ def run_optimization(
         metric=metric_fn,
         max_full_evals=5,
         track_stats=True,
-        reflection_minibatch_size=min(2, len(trainset)),
+        reflection_minibatch_size=1,
         reflection_lm=reflection_lm,
     )
 

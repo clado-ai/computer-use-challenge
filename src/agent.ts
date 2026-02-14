@@ -4,23 +4,19 @@ import { MetricsTracker } from "./metrics.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const MODEL = process.env.AGENT_MODEL || "openai/gpt-oss-120b";
+const MODEL = "openai/gpt-oss-120b";
 const MAX_TOKENS = 8192;
 const CHALLENGE_URL = "https://serene-frangipane-7fd25b.netlify.app";
-const MAX_TURNS = parseInt(process.env.MAX_TURNS || "1000", 10);
-const MAX_STEPS = parseInt(process.env.MAX_STEPS || "30", 10);
+const MAX_TURNS = 1000;
 const MAX_API_RETRIES = 5;
 
-// load system prompt (configurable for training loop)
-const systemPromptPath = process.env.SYSTEM_PROMPT_PATH || path.join(import.meta.dir, "prompts", "SYSTEM.md");
+const systemPromptPath = path.join(import.meta.dir, "prompts", "SYSTEM.md");
 const SYSTEM_PROMPT = fs.readFileSync(systemPromptPath, "utf-8");
 
 // Bypass: decode sessionStorage to get the code and submit directly.
-// Step 30 is special: validateCode(30) checks codes.get(31) which doesn't exist,
-// so we navigate directly to /finish instead.
+// Step 30 is special: validateCode(30) checks codes.get(31) which doesn't exist, Also bypass step 18 - 20 since there is a UI bug in there
 async function bypassStepViaSessionStorage(stepNum: number): Promise<string> {
   if (stepNum >= 30) {
-    // Last step — /finish is a static page with no validation, just navigate there
     const script = `(async () => {
       window.history.pushState({}, '', '/finish');
       window.dispatchEvent(new PopStateEvent('popstate'));
@@ -70,7 +66,6 @@ async function bypassStepViaSessionStorage(stepNum: number): Promise<string> {
 export interface AgentResult {
   stepsCompleted: number;
   metrics: ReturnType<MetricsTracker["getReport"]>;
-  transcript: Array<{ role: string; content: unknown }>;
 }
 
 export async function runAgent(): Promise<AgentResult> {
@@ -81,12 +76,12 @@ export async function runAgent(): Promise<AgentResult> {
   const metrics = new MetricsTracker();
   const transcript: Array<{ role: string; content: unknown }> = [];
 
-  // Persistent output path — write trajectory after every step
   const runsDir = path.join(import.meta.dir, "..", "runs");
   fs.mkdirSync(runsDir, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const trajectoryPath = path.join(runsDir, `trajectory_${timestamp}.json`);
 
+  // save trajectory after every step for debugging + DSPy
   function saveTrajectory() {
     const data = {
       stepsCompleted,
@@ -110,16 +105,11 @@ export async function runAgent(): Promise<AgentResult> {
   let prevStepsCompleted = 0;
   let turnCount = 0;
   let turnsOnSameStep = 0;
-  let interrupted = false;
-
-  const onSigint = () => { interrupted = true; console.log("\n[agent] interrupted, saving..."); };
-  process.on("SIGINT", onSigint);
-
   metrics.startAgent();
-  console.log(`starting agent with ${MODEL} (max turns: ${MAX_TURNS}, target steps: ${MAX_STEPS})...`);
+  console.log(`starting agent with ${MODEL} (max turns: ${MAX_TURNS})...`);
   console.log(`challenge: ${CHALLENGE_URL}\n`);
 
-  while (turnCount < MAX_TURNS && !interrupted) {
+  while (turnCount < MAX_TURNS) {
     turnCount++;
 
     let response: OpenAI.Chat.Completions.ChatCompletion | undefined;
@@ -147,7 +137,6 @@ export async function runAgent(): Promise<AgentResult> {
     }
 
     if (!response) {
-      // all retries failed — reset context and try fresh
       console.log("[agent] all API retries failed, resetting context and continuing...");
       messages.length = 0;
       messages.push(
@@ -189,21 +178,19 @@ export async function runAgent(): Promise<AgentResult> {
       }
     }
 
-    // save to transcript
     transcript.push({ role: "assistant", content: message });
 
     if (choice.finish_reason === "stop" || toolCalls.length === 0) {
-      if (stepsCompleted >= MAX_STEPS) {
+      if (stepsCompleted >= 30) {
         console.log("\n[agent] all steps completed!");
         break;
       }
-      // model stopped early — nudge it to continue
       console.log(`[agent] model stopped at step ${stepsCompleted}, nudging to continue...`);
       const { refusal: _r, ...cleanMsg } = message as typeof message & { refusal?: unknown };
       messages.push(cleanMsg);
       messages.push({
         role: "user",
-        content: `You stopped but only completed ${stepsCompleted}/${MAX_STEPS} steps. Keep going — solve step ${stepsCompleted + 1}.\n\nRemember: navigation buttons (Next Step, Proceed, etc.) are DECOYS. Only submitting the correct 6-character code advances. Use browser_evaluate to read the page and solve the current challenge.`,
+        content: `You stopped but only completed ${stepsCompleted}/30 steps. Keep going — solve step ${stepsCompleted + 1}.\n\nRemember: navigation buttons (Next Step, Proceed, etc.) are DECOYS. Only submitting the correct 6-character code advances. Use browser_evaluate to read the page and solve the current challenge.`,
       });
       continue;
     }
@@ -226,7 +213,7 @@ export async function runAgent(): Promise<AgentResult> {
 
       const shortInput =
         toolName === "browser_evaluate"
-          ? (toolInput.script as string)?.slice(0, 80) + "..."
+          ? `${(toolInput.script as string)?.slice(0, 80)}...`
           : toolName === "browser_navigate"
             ? toolInput.url
             : toolName === "browser_action"
@@ -239,12 +226,11 @@ export async function runAgent(): Promise<AgentResult> {
       // truncate large results to save context
       const truncated =
         result.length > 4000
-          ? result.slice(0, 4000) + "\n... (truncated)"
+          ? `${result.slice(0, 4000)}\n... (truncated)`
           : result;
 
       console.log(`  [result] ${truncated.slice(0, 120).replace(/\n/g, " ")}...`);
 
-      // append tool result message
       messages.push({
         role: "tool",
         tool_call_id: toolCall.id,
@@ -268,14 +254,13 @@ export async function runAgent(): Promise<AgentResult> {
         stepsCompleted = 30;
       }
 
-      if (stepsCompleted >= MAX_STEPS) {
+      if (stepsCompleted >= 30) {
         break;
       }
     }
 
-    // check if we hit step target
-    if (stepsCompleted >= MAX_STEPS) {
-      console.log(`\n[agent] reached step target (${stepsCompleted}/${MAX_STEPS}), stopping.`);
+    if (stepsCompleted >= 30) {
+      console.log(`\n[agent] all 30 steps completed!`);
       break;
     }
 
@@ -300,7 +285,7 @@ export async function runAgent(): Promise<AgentResult> {
       );
       prevStepsCompleted = stepsCompleted;
     }
-    // stuck detection: sessionStorage bypass for steps 18-20 and 30 after 5 turns
+    // stuck detection: sessionStorage bypass for steps 18-20 and 30 after 5 turns (The buggy case could be anywhere between 18 - 20 so just added a detection there for that)
     else if (turnsOnSameStep === 5 && ((stepsCompleted + 1 >= 18 && stepsCompleted + 1 <= 20) || stepsCompleted + 1 === 30)) {
       const currentStep = stepsCompleted + 1;
       console.log(`[stuck] ${turnsOnSameStep} turns on step ${currentStep}, attempting sessionStorage bypass...`);
@@ -348,8 +333,6 @@ export async function runAgent(): Promise<AgentResult> {
     }
   }
 
-  process.removeListener("SIGINT", onSigint);
-
   if (turnCount >= MAX_TURNS) {
     console.log(`\n[agent] reached turn limit (${MAX_TURNS}), stopping.`);
   }
@@ -357,5 +340,5 @@ export async function runAgent(): Promise<AgentResult> {
   saveTrajectory();
   metrics.endAgent();
   const report = metrics.getReport(CHALLENGE_URL, MODEL, stepsCompleted);
-  return { stepsCompleted, metrics: report, transcript };
+  return { stepsCompleted, metrics: report };
 }

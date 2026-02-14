@@ -25,7 +25,7 @@ export interface RunMetrics {
   steps: StepMetrics[];
 }
 
-// gpt-oss-120b pricing (openrouter)
+// Groq pricing for GPT-OSS-120B on OpenRouter
 const INPUT_COST_PER_M = 0.039;
 const OUTPUT_COST_PER_M = 0.19;
 
@@ -34,7 +34,7 @@ export class MetricsTracker {
   private agentStart = 0;
   private agentEnd = 0;
   private steps: StepMetrics[] = [];
-  private currentStep: Partial<StepMetrics> | null = null;
+  private currentStep: Pick<StepMetrics, 'step' | 'startTime' | 'toolCalls' | 'inputTokens' | 'outputTokens'> | null = null;
   private totalInputTokens = 0;
   private totalOutputTokens = 0;
   private totalToolCalls = 0;
@@ -62,13 +62,13 @@ export class MetricsTracker {
     if (!this.currentStep) return;
     const now = Date.now();
     const completed: StepMetrics = {
-      step: this.currentStep.step!,
-      startTime: this.currentStep.startTime!,
+      step: this.currentStep.step,
+      startTime: this.currentStep.startTime,
       endTime: now,
-      durationMs: now - this.currentStep.startTime!,
-      toolCalls: this.currentStep.toolCalls!,
-      inputTokens: this.currentStep.inputTokens!,
-      outputTokens: this.currentStep.outputTokens!,
+      durationMs: now - this.currentStep.startTime,
+      toolCalls: this.currentStep.toolCalls,
+      inputTokens: this.currentStep.inputTokens,
+      outputTokens: this.currentStep.outputTokens,
     };
     this.steps.push(completed);
     this.currentStep = null;
@@ -81,9 +81,9 @@ export class MetricsTracker {
     this.totalApiCalls++;
 
     if (this.currentStep) {
-      this.currentStep.inputTokens = (this.currentStep.inputTokens ?? 0) + inputTokens;
-      this.currentStep.outputTokens = (this.currentStep.outputTokens ?? 0) + outputTokens;
-      this.currentStep.toolCalls = (this.currentStep.toolCalls ?? 0) + toolCalls;
+      this.currentStep.inputTokens += inputTokens;
+      this.currentStep.outputTokens += outputTokens;
+      this.currentStep.toolCalls += toolCalls;
     }
   }
 
@@ -111,14 +111,4 @@ export class MetricsTracker {
     };
   }
 
-  printSummary(report: RunMetrics) {
-    console.log("\n=== Run Summary ===");
-    console.log(`steps completed: ${report.stepsCompleted}/${report.totalSteps}`);
-    console.log(`total time: ${(report.totalDurationMs / 1000).toFixed(1)}s`);
-    console.log(`agent time: ${(report.agentDurationMs / 1000).toFixed(1)}s`);
-    console.log(`api calls: ${report.totalApiCalls}`);
-    console.log(`tool calls: ${report.totalToolCalls}`);
-    console.log(`tokens: ${report.totalInputTokens} in / ${report.totalOutputTokens} out`);
-    console.log(`cost: $${report.totalCost}`);
-  }
 }

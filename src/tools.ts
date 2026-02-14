@@ -6,9 +6,6 @@ import {
 import type OpenAI from "openai";
 import * as path from "node:path";
 import * as fs from "node:fs";
-
-// ---- browser management (direct launch, no server needed) ----
-
 let context: BrowserContext | null = null;
 let currentPage: Page | null = null;
 
@@ -24,12 +21,12 @@ async function launchBrowser(): Promise<BrowserContext> {
     headless,
     viewport: { width: 1280, height: 720 },
     args: [
-      "--disable-blink-features=AutomationControlled",
-      "--disable-dev-shm-usage",     // prevent /dev/shm OOM crashes
-      "--disable-gpu",                // reduce memory usage
-      "--no-sandbox",                 // avoid sandbox-related crashes
+      "--disable-blink-features=AutomationControlled", // a bunch of stuff here to just save compute
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--no-sandbox",
       "--disable-extensions",
-      "--js-flags=--max-old-space-size=512",  // cap V8 heap
+      "--js-flags=--max-old-space-size=512"
     ],
     timeout: 30000,
   });
@@ -113,8 +110,6 @@ export const toolDefinitions: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   },
 ];
 
-// ---- tool execution ----
-
 async function executeToolInner(
   name: string,
   input: Record<string, unknown>,
@@ -137,8 +132,6 @@ export async function executeTool(
     return await executeToolInner(name, input);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // if the browser context died, reset state but DON'T silently relaunch
-    // — the agent needs to know so it can re-navigate
     if (msg.includes("has been closed") || msg.includes("Target closed")) {
       console.log("[browser] context lost — browser crashed");
       context = null;
@@ -154,7 +147,6 @@ async function toolNavigate(url: string): Promise<string> {
 
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
 
-  // suppress JS dialog functions
   await page.evaluate(`
     window.alert = () => {};
     window.confirm = () => true;
@@ -175,7 +167,6 @@ async function toolNavigate(url: string): Promise<string> {
 async function toolEvaluate(script: string): Promise<string> {
   const page = await ensurePage();
   try {
-    // 30s timeout to prevent hanging evaluate calls from crashing the browser
     const result = await Promise.race([
       page.evaluate(script),
       new Promise((_, reject) =>
@@ -204,7 +195,6 @@ async function toolEvaluate(script: string): Promise<string> {
   }
 }
 
-// cleanup
 export async function cleanup() {
   if (context) {
     try {

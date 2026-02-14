@@ -247,15 +247,27 @@ Here is the trajectory analysis from the agent's most recent run:
 Produce an improved version of the system prompt that addresses the failures and reinforces the successes observed in the trajectory. Output ONLY the improved prompt text."""
 
     print(f"[optimize] calling {model} to improve prompt...")
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": OPTIMIZER_SYSTEM},
-            {"role": "user", "content": user_message},
-        ],
-        max_tokens=16384,
-        temperature=0.7,
-    )
+    import time
+    response = None
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": OPTIMIZER_SYSTEM},
+                    {"role": "user", "content": user_message},
+                ],
+                max_tokens=16384,
+                temperature=0.7,
+            )
+            break
+        except Exception as e:
+            print(f"[optimize] attempt {attempt + 1}/3 failed: {e}")
+            if attempt < 2:
+                time.sleep(5 * (attempt + 1))
+
+    if not response:
+        raise RuntimeError("All 3 optimization API attempts failed")
 
     optimized_prompt = response.choices[0].message.content.strip()
 

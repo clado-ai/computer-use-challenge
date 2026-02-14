@@ -40,6 +40,13 @@ Replace XXXXXX with the actual 6-character code. Next step number = success. Sam
 new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500)), 300))
 ```
 
+## UNIVERSAL CODE EXTRACTION HELPER
+Use this regex priority when extracting codes from page text:
+1. `text.match(/real code is:\s*([A-Z0-9]{6})/i)` — after completing mini-UI
+2. `text.match(/Code revealed:\s*([A-Z0-9]{6})/i)` — after reveals
+3. `text.match(/code[:\s]+([A-Z0-9]{6})/i)` — general code mention
+4. As last resort, find all 6-char matches and pick the one NOT matching known UI strings
+
 ## CHALLENGE PATTERNS
 
 ### Click to Reveal
@@ -119,7 +126,7 @@ new Promise(resolve => setTimeout(() => {
 ```
 
 ### Drag-and-Drop Challenge
-Use `clientX`/`clientY` from `getBoundingClientRect()`. Wait 2s after drops.
+Use `clientX`/`clientY` from `getBoundingClientRect()`. Match pieces to slots by text/color when possible.
 ```javascript
 const pieces = Array.from(document.querySelectorAll('[draggable="true"]'));
 const slots = Array.from(document.querySelectorAll('.border-dashed'));
@@ -277,13 +284,7 @@ Click Register, wait 2s for cache, click Retrieve:
     setTimeout(() => {
       const t = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
       const m = t?.match(/real code is:\s*([A-Z0-9]{6})/i);
-      if (m) resolve('CODE: ' + m[1]);
-      else if (t?.includes('Step 30')) {
-        window.history.pushState({}, '', '/finish');
-        window.dispatchEvent(new PopStateEvent('popstate'));
-        setTimeout(() => resolve('NAVIGATED_TO_FINISH'), 1500);
-      }
-      else resolve('NO_CODE\n' + t);
+      resolve(m ? 'CODE: ' + m[1] : 'NO_CODE\n' + t);
     }, 1500);
   }, 2000));
 })()
@@ -312,13 +313,29 @@ Click "Trigger Mutation" 10 times, then Complete:
 ```
 
 ### Keyboard Sequence Challenge
+Read the required keys from the page, then dispatch them:
 ```javascript
-const keys = [['a', true], ['c', true], ['v', true]]; // adjust based on challenge
-keys.forEach(([key, ctrl]) => {
-  document.dispatchEvent(new KeyboardEvent('keydown', {key, ctrlKey: ctrl, bubbles: true}));
-  document.dispatchEvent(new KeyboardEvent('keyup', {key, ctrlKey: ctrl, bubbles: true}));
-});
-new Promise(resolve => setTimeout(() => resolve(document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1000)), 500))
+(function() {
+  const text = document.querySelector('h1')?.parentElement?.innerText || '';
+  const keyMatches = text.match(/Ctrl\+[A-Z]/g) || [];
+  const keys = keyMatches.map(k => ({key: k.split('+')[1].toLowerCase(), ctrlKey: true}));
+  if (keys.length === 0) {
+    [['a',true],['c',true],['v',true]].forEach(([key,ctrl]) => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {key, ctrlKey:ctrl, bubbles:true}));
+      document.dispatchEvent(new KeyboardEvent('keyup', {key, ctrlKey:ctrl, bubbles:true}));
+    });
+  } else {
+    keys.forEach(({key, ctrlKey}) => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {key, ctrlKey, bubbles:true}));
+      document.dispatchEvent(new KeyboardEvent('keyup', {key, ctrlKey, bubbles:true}));
+    });
+  }
+  return new Promise(resolve => setTimeout(() => {
+    const t = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1000);
+    const m = t?.match(/real code is:\s*([A-Z0-9]{6})/i) || t?.match(/Code revealed:\s*([A-Z0-9]{6})/i);
+    resolve(m ? 'CODE: ' + (m[1] || m[0]) : 'NO_CODE\n' + t);
+  }, 1000));
+})()
 ```
 
 ### Audio Challenge
@@ -409,23 +426,133 @@ new Promise(resolve => setTimeout(() => {
 }, 1000))
 ```
 
-### Conditional Reveal Challenge
+### Conditional Reveal Challenge (KITCHEN SINK — use when stuck)
 Try all interactive actions, then click Complete/Reveal:
 ```javascript
 (function() {
   document.querySelectorAll('div').forEach(d => { if (d.textContent.includes('Wrong Button')) d.remove(); });
   Array.from(document.querySelectorAll('button')).filter(b => !b.className.includes('gradient') && !['Submit Code','Next Step','Proceed','Continue','Advance'].includes(b.textContent.trim())).forEach(b => b.click());
   Array.from(document.querySelectorAll('[class*="cursor-pointer"]')).forEach(el => { el.dispatchEvent(new MouseEvent('mouseenter', {bubbles:true})); el.click(); });
-  Array.from(document.querySelectorAll('input')).filter(i => i.placeholder !== 'Enter 6-character code').forEach(i => { i.focus(); i.value = 'test'; i.dispatchEvent(new Event('input', {bubbles:true})); });
-  Array.from(document.querySelectorAll('div')).filter(d => d.scrollHeight > d.clientHeight && d.clientHeight > 0 && d.clientHeight < 200).forEach(d => { d.scrollTop = d.scrollHeight; });
+  Array.from(document.querySelectorAll('input[type="checkbox"]')).forEach(cb => { if (!cb.checked) cb.click(); });
+  Array.from(document.querySelectorAll('[role="switch"], [role="checkbox"]')).forEach(el => el.click());
+  Array.from(document.querySelectorAll('input')).filter(i => i.placeholder !== 'Enter 6-character code' && i.type !== 'hidden').forEach(i => { i.focus(); const ns = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set; ns.call(i,'test'); if(i._valueTracker)i._valueTracker.setValue(''); i.dispatchEvent(new Event('input',{bubbles:true})); });
+  Array.from(document.querySelectorAll('div')).filter(d => d.scrollHeight > d.clientHeight && d.clientHeight > 0 && d.clientHeight < 200).forEach(d => { d.scrollTop = d.scrollHeight; d.dispatchEvent(new Event('scroll',{bubbles:false})); });
+  document.querySelectorAll('input[type="range"]').forEach(slider => {
+    const ns = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+    ns.call(slider, slider.max || '100');
+    if(slider._valueTracker) slider._valueTracker.setValue('');
+    slider.dispatchEvent(new Event('input',{bubbles:true}));
+    slider.dispatchEvent(new Event('change',{bubbles:true}));
+  });
   return new Promise(resolve => setTimeout(() => {
-    Array.from(document.querySelectorAll('button')).find(b => (b.textContent.includes('Complete') || b.textContent.includes('Reveal')) && !b.className.includes('gradient'))?.click();
+    Array.from(document.querySelectorAll('button')).find(b => (b.textContent.includes('Complete') || b.textContent.includes('Reveal') || b.textContent.includes('Verify')) && !b.className.includes('gradient'))?.click();
     setTimeout(() => {
       const t = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
       const m = t?.match(/real code is:\s*([A-Z0-9]{6})/i);
       resolve(m ? 'CODE: ' + m[1] : 'NO_CODE\n' + t);
     }, 1000);
   }, 1000));
+})()
+```
+
+### Checkbox/Toggle Challenge
+Check all checkboxes or toggle all switches, then click Reveal/Complete:
+```javascript
+(function() {
+  document.querySelectorAll('input[type="checkbox"]').forEach(cb => { if (!cb.checked) { cb.click(); } });
+  document.querySelectorAll('[role="switch"], [role="checkbox"]').forEach(el => el.click());
+  return new Promise(resolve => setTimeout(() => {
+    Array.from(document.querySelectorAll('button')).find(b => (b.textContent.includes('Complete') || b.textContent.includes('Reveal') || b.textContent.includes('Verify')) && !b.className.includes('gradient'))?.click();
+    setTimeout(() => {
+      const t = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
+      const m = t?.match(/real code is:\s*([A-Z0-9]{6})/i);
+      resolve(m ? 'CODE: ' + m[1] : 'NO_CODE\n' + t);
+    }, 1000);
+  }, 500));
+})()
+```
+
+### Slider/Range Challenge
+Set slider(s) to required value, then click Reveal/Complete:
+```javascript
+(function() {
+  const text = document.querySelector('h1')?.parentElement?.innerText || '';
+  const targetMatch = text.match(/to\s+(\d+)/i) || text.match(/value.*?(\d+)/i) || text.match(/(\d+)/);
+  const target = targetMatch ? parseInt(targetMatch[1]) : 100;
+  document.querySelectorAll('input[type="range"]').forEach(slider => {
+    const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    nativeSet.call(slider, String(target));
+    if (slider._valueTracker) slider._valueTracker.setValue('');
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+    slider.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  return new Promise(resolve => setTimeout(() => {
+    Array.from(document.querySelectorAll('button')).find(b => (b.textContent.includes('Complete') || b.textContent.includes('Reveal') || b.textContent.includes('Verify')) && !b.className.includes('gradient'))?.click();
+    setTimeout(() => {
+      const t = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
+      const m = t?.match(/real code is:\s*([A-Z0-9]{6})/i);
+      resolve(m ? 'CODE: ' + m[1] : 'NO_CODE\n' + t);
+    }, 1000);
+  }, 500));
+})()
+```
+
+### Color Picker / Selection Challenge
+Select the specified color or option, then click Complete:
+```javascript
+(function() {
+  const text = document.querySelector('h1')?.parentElement?.innerText || '';
+  document.querySelectorAll('.cursor-pointer, [role="option"]').forEach(el => el.click());
+  document.querySelectorAll('select').forEach(sel => { sel.selectedIndex = sel.options.length - 1; sel.dispatchEvent(new Event('change', {bubbles:true})); });
+  return new Promise(resolve => setTimeout(() => {
+    Array.from(document.querySelectorAll('button')).find(b => (b.textContent.includes('Complete') || b.textContent.includes('Reveal') || b.textContent.includes('Submit') || b.textContent.includes('Verify')) && !b.className.includes('gradient') && b.textContent.trim() !== 'Submit Code')?.click();
+    setTimeout(() => {
+      const t = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
+      const m = t?.match(/real code is:\s*([A-Z0-9]{6})/i);
+      resolve(m ? 'CODE: ' + m[1] : 'NO_CODE\n' + t);
+    }, 1000);
+  }, 500));
+})()
+```
+
+### Sorting / Ordering Challenge
+Look for items that need to be ordered. Use React state manipulation or drag events:
+```javascript
+(function() {
+  const text = document.querySelector('h1')?.parentElement?.innerText || '';
+  const existing = text.match(/real code is:\s*([A-Z0-9]{6})/i);
+  if (existing) return existing[1];
+  // Try clicking sort buttons or items in order
+  const items = Array.from(document.querySelectorAll('[draggable="true"]'));
+  const slots = Array.from(document.querySelectorAll('.border-dashed'));
+  if (items.length && slots.length) {
+    // Sort items alphabetically/numerically and drag to slots
+    items.sort((a,b) => a.textContent.localeCompare(b.textContent, undefined, {numeric:true}));
+    items.forEach((item, i) => {
+      if (i < slots.length) {
+        const dt = new DataTransfer();
+        const ir = item.getBoundingClientRect();
+        const sr = slots[i].getBoundingClientRect();
+        item.dispatchEvent(new DragEvent('dragstart', {dataTransfer:dt, clientX:ir.left+ir.width/2, clientY:ir.top+ir.height/2, bubbles:true}));
+        slots[i].dispatchEvent(new DragEvent('dragover', {dataTransfer:dt, clientX:sr.left+sr.width/2, clientY:sr.top+sr.height/2, bubbles:true}));
+        slots[i].dispatchEvent(new DragEvent('drop', {dataTransfer:dt, clientX:sr.left+sr.width/2, clientY:sr.top+sr.height/2, bubbles:true}));
+        item.dispatchEvent(new DragEvent('dragend', {bubbles:true}));
+      }
+    });
+  }
+  // Also try clicking numbered buttons in order
+  for (let i = 1; i <= 10; i++) {
+    const btn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === String(i));
+    if (btn) btn.click();
+  }
+  return new Promise(resolve => setTimeout(() => {
+    Array.from(document.querySelectorAll('button')).find(b => (b.textContent.includes('Complete') || b.textContent.includes('Verify') || b.textContent.includes('Check')) && !b.className.includes('gradient'))?.click();
+    setTimeout(() => {
+      const t = document.querySelector('h1')?.parentElement?.innerText?.substring(0, 1500);
+      const m = t?.match(/real code is:\s*([A-Z0-9]{6})/i);
+      resolve(m ? 'CODE: ' + m[1] : 'NO_CODE\n' + t);
+    }, 1000);
+  }, 500));
 })()
 ```
 
@@ -438,13 +565,24 @@ Many challenge components store the code in a React `onComplete` callback. Extra
   const fiberKey = Object.keys(el).find(k => k.startsWith('__reactFiber$'));
   if (!fiberKey) return 'NO_FIBER';
   let fiber = el[fiberKey];
-  while (fiber) {
+  const visited = new Set();
+  while (fiber && !visited.has(fiber)) {
+    visited.add(fiber);
     const props = fiber.memoizedProps || fiber.pendingProps || {};
     if (typeof props.onComplete === 'function') {
       const proof = {type:"challenge", timestamp:Date.now(), data:{method:"fiber"}};
-      const code = props.onComplete(proof);
-      if (code && /^[A-Z0-9]{6}$/.test(code)) return 'FIBER_CODE: ' + code;
+      try {
+        const code = props.onComplete(proof);
+        if (code && /^[A-Z0-9]{6}$/.test(code)) return 'FIBER_CODE: ' + code;
+      } catch(e) {}
       break;
+    }
+    if (fiber.memoizedState) {
+      try {
+        const stateStr = JSON.stringify(fiber.memoizedState);
+        const codeMatch = stateStr?.match(/"([A-Z0-9]{6})"/);
+        if (codeMatch) return 'FIBER_STATE_CODE: ' + codeMatch[1];
+      } catch(e) {}
     }
     fiber = fiber.return;
   }
@@ -473,6 +611,8 @@ new Promise(resolve => {
   info.push('LS: ' + JSON.stringify(localStorage));
   info.push('SS: ' + JSON.stringify(sessionStorage));
   try { Object.keys(window).filter(k => typeof window[k] === 'string' && window[k].match(/^[A-Z0-9]{6}$/)).forEach(k => info.push('WIN: ' + k + '=' + window[k])); } catch(e) {}
+  info.push('BUTTONS: ' + Array.from(document.querySelectorAll('button')).map(b => b.textContent.trim()).join(' | '));
+  info.push('INPUTS: ' + Array.from(document.querySelectorAll('input')).map(i => i.placeholder + '/' + i.type).join(' | '));
   info.push('HTML: ' + document.querySelector('h1')?.parentElement?.innerHTML?.substring(0, 500));
   resolve(info.join('\n').substring(0, 3000));
 })
@@ -481,15 +621,16 @@ new Promise(resolve => {
 ## WORKFLOW
 - **Combine read + solve when possible**: Simple challenges → solve and submit in one call
 - **Budget**: ~2-3 calls per step. Be efficient but thorough
-- **Escalation**: Read → Match pattern → Solve → If NO_CODE → React Fiber Fallback → Deep DOM
+- **Escalation**: Read → Match pattern → Solve → If NO_CODE → React Fiber Fallback → Deep DOM → Kitchen Sink
 - **After wrong submission**: Don't retry same code. Try DIFFERENT approach
 - **Every code is exactly 6 characters**: uppercase A-Z and digits 0-9 only
 - **Don't overthink simple steps**: If code is plainly visible, just submit it
-- **If stuck after 3+ attempts**: Try completely different interpretation. Re-read from scratch
+- **If stuck after 3+ attempts**: Try completely different interpretation. Re-read from scratch. Try the Conditional Reveal (kitchen sink) approach.
 - **Perform interactions FIRST**, wait for re-render, THEN read results
 - **For puzzles requiring computation**: Do ALL math/logic in JavaScript
-- **When multiple 6-char matches exist**: The puzzle solution/hidden one is the answer, not UI text
+- **When multiple 6-char matches exist**: The puzzle solution/hidden one is the answer, not UI text like "Step 1" etc.
 - **Dismiss "Wrong Button!" overlay first**: `document.querySelectorAll('div').forEach(d => { if (d.textContent.includes('Wrong Button')) d.remove(); })`
 - **NEVER reuse codes from previous steps** — each step generates a unique code
 - **NEVER call form.submit()** — destroys the React SPA
 - **Reassemble console listener if lost**: `if(!window._consoleLogs){window._consoleLogs=[];const o=console.log;console.log=(...a)=>{window._consoleLogs.push(a.join(' '));o.apply(console,a)}}`
+- **If page shows Step 30 completed**: The challenge is done! Look for completion message.

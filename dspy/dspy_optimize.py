@@ -40,10 +40,11 @@ class PromptImprover(dspy.Signature):
     3. Where the agent wasted turns (wrong approaches, repeated errors)
 
     Then produce an improved prompt that:
+    - Completes MORE steps (most important metric)
     - Fixes failure patterns with concrete JavaScript solutions
     - Preserves and reinforces successful patterns
-    - Maximizes efficiency: minimize turns per step (target 2-3 calls per step)
-    - Reduces total steps failed (most important metric)
+    - Reduces wasted turns: no repeated errors, no unnecessary diagnostics, no wrong approaches
+    - Minimizes turns per step (target 2-3 calls per step, combine solve+submit)
     - Be as detailed and comprehensive as needed — length is not a concern
     """
 
@@ -114,9 +115,9 @@ def make_prompt_metric(judge_lm):
             f"IMPROVED PROMPT:\n"
             f"{improved}\n\n"
             f"Criteria to evaluate:\n"
-            f"1. FAILURE_COVERAGE: Does the improved prompt address failures from the trajectory? Will it help the agent complete MORE steps?\n"
+            f"1. FAILURE_COVERAGE: Does the improved prompt address failures from the trajectory? Will it help the agent complete MORE steps? Does it reduce wasted turns (repeated errors, unnecessary diagnostics, wrong approaches)?\n"
             f"2. PATTERN_PRESERVATION: Are successful patterns preserved?\n"
-            f"3. EFFICIENCY: Does the prompt minimize turns per step? Combines solve+submit in one call? Avoids wasteful diagnostic calls?"
+            f"3. EFFICIENCY: Does the prompt minimize turns per step? Combines solve+submit in one call? Eliminates wasteful calls that don't advance progress?"
         )
 
         with dspy.context(lm=judge_lm):

@@ -48,13 +48,9 @@ STEP_INCREMENT = 5
 # Model curriculum: each model runs through the full step curriculum (2→30),
 # then we move to the next model and reset step target.
 MODEL_CURRICULUM = [
-    "anthropic/claude-haiku-4.5",
+    "openai/gpt-oss-120b",
 ]
 
-# DSPy GEPA runs every N iterations (expensive but thorough).
-# Between GEPA runs, the direct LLM optimizer handles each iteration.
-DSPY_INTERVAL = 5
-MIN_TRAJECTORIES_FOR_DSPY = 3
 
 
 # ---- turn budget ----
@@ -276,31 +272,19 @@ def run_model_phase(
         current_prompt = SYSTEM_BASE_PATH.read_text() if SYSTEM_BASE_PATH.exists() else ""
         optimized_prompt = None
 
-        # 7a. Try DSPy GEPA every N iterations (thorough, uses all trajectories)
+        # 7a. DSPy GEPA optimization (always)
         trajectory_count = len(list(RUNS_DIR.glob("trajectory_*.json")))
-        if (i + 1) % DSPY_INTERVAL == 0 and trajectory_count >= MIN_TRAJECTORIES_FOR_DSPY:
-            try:
-                from dspy_optimize import run_dspy_optimization
-                print(f"[train_loop] running DSPy GEPA optimization ({trajectory_count} trajectories)...")
-                result = run_dspy_optimization(RUNS_DIR, current_prompt)
-                optimized_prompt = result["optimized_prompt"]
-                print(f"[train_loop] DSPy GEPA done (stats: {result.get('stats', {})})")
-            except Exception as e:
-                print(f"[train_loop] DSPy optimization failed: {e}")
-                import traceback
-                traceback.print_exc()
-
-        # 7b. Fall back to direct LLM optimizer
-        if not optimized_prompt or optimized_prompt == current_prompt:
-            try:
-                from optimize import run_optimization
-                result = run_optimization(transcript_file, current_prompt)
-                optimized_prompt = result["optimized_prompt"]
-            except Exception as e:
-                print(f"[train_loop] direct optimization also failed: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
+        try:
+            from dspy_optimize import run_dspy_optimization
+            print(f"[train_loop] running DSPy GEPA optimization ({trajectory_count} trajectories)...")
+            result = run_dspy_optimization(RUNS_DIR, current_prompt)
+            optimized_prompt = result["optimized_prompt"]
+            print(f"[train_loop] DSPy GEPA done (stats: {result.get('stats', {})})")
+        except Exception as e:
+            print(f"[train_loop] DSPy optimization failed: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
 
         # 8. Write updated SYSTEM_BASE.md
         if optimized_prompt and optimized_prompt != current_prompt:

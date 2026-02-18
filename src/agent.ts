@@ -108,6 +108,8 @@ export async function runAgent(): Promise<AgentResult> {
   let prevStepsCompleted = 0;
   let turnCount = 0;
   let turnsOnSameStep = 0;
+  let stepStartTime = Date.now();
+  const stepTimings: { step: number; durationMs: number; turns: number }[] = [];
   metrics.startAgent();
   console.log(`starting agent with ${MODEL} (max turns: ${MAX_TURNS})...`);
   console.log(`challenge: ${CHALLENGE_URL}\n`);
@@ -284,6 +286,15 @@ export async function runAgent(): Promise<AgentResult> {
 
     // clear context on step transition
     if (stepsCompleted > prevStepsCompleted) {
+      if (BENCHMARK) {
+        const now = Date.now();
+        const durationMs = now - stepStartTime;
+        for (let s = prevStepsCompleted + 1; s <= stepsCompleted; s++) {
+          stepTimings.push({ step: s, durationMs, turns: turnsOnSameStep });
+          console.log(`[benchmark] step ${s} completed in ${(durationMs / 1000).toFixed(1)}s (${turnsOnSameStep} turns)`);
+        }
+        stepStartTime = now;
+      }
       console.log(`[context] step ${prevStepsCompleted} → ${stepsCompleted}${BENCHMARK ? '' : ', clearing context'}`);
       saveTrajectory();
       turnsOnSameStep = 0;
@@ -318,6 +329,15 @@ export async function runAgent(): Promise<AgentResult> {
       }
 
       if (stepsCompleted > prevStepsCompleted) {
+        if (BENCHMARK) {
+          const now = Date.now();
+          const durationMs = now - stepStartTime;
+          for (let s = prevStepsCompleted + 1; s <= stepsCompleted; s++) {
+            stepTimings.push({ step: s, durationMs, turns: turnsOnSameStep });
+            console.log(`[benchmark] step ${s} completed in ${(durationMs / 1000).toFixed(1)}s (${turnsOnSameStep} turns, bypass)`);
+          }
+          stepStartTime = now;
+        }
         console.log(`[bypass] >> success! completed step ${prevStepsCompleted + 1}, now on step ${stepsCompleted + 1}`);
         saveTrajectory();
         turnsOnSameStep = 0;
@@ -358,6 +378,17 @@ export async function runAgent(): Promise<AgentResult> {
 
   saveTrajectory();
   metrics.endAgent();
+
+  if (BENCHMARK && stepTimings.length > 0) {
+    console.log("\n=== Benchmark Step Timings ===");
+    for (const t of stepTimings) {
+      console.log(`  step ${t.step}: ${(t.durationMs / 1000).toFixed(1)}s (${t.turns} turns)`);
+    }
+    const totalBenchTime = stepTimings.reduce((sum, t) => sum + t.durationMs, 0);
+    console.log(`  total: ${(totalBenchTime / 1000).toFixed(1)}s for ${stepTimings.length} steps`);
+    console.log(`  avg: ${(totalBenchTime / stepTimings.length / 1000).toFixed(1)}s per step`);
+  }
+
   const report = metrics.getReport(CHALLENGE_URL, MODEL, stepsCompleted);
   return { stepsCompleted, metrics: report };
 }

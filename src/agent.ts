@@ -236,10 +236,20 @@ export async function runAgent(): Promise<AgentResult> {
 
       console.log(`  [result] ${truncated.slice(0, 120).replace(/\n/g, " ")}...`);
 
+      // if browser crashed or navigate timed out, add recovery hint
+      const isError = truncated.startsWith("error:");
+      const isCrash = truncated.includes("browser crashed");
+      const isNavError = truncated.includes("Timeout") && toolName === "browser_navigate";
+
+      let toolContent = truncated;
+      if (isCrash || isNavError) {
+        toolContent += `\n\nThe challenge URL is ${CHALLENGE_URL} (not localhost). Use browser_navigate("${CHALLENGE_URL}") to recover.`;
+      }
+
       messages.push({
         role: "tool",
         tool_call_id: toolCall.id,
-        content: truncated,
+        content: toolContent,
       });
 
       transcript.push({ role: "tool", content: { tool_call_id: toolCall.id, name: toolName, result: truncated } });

@@ -4,14 +4,17 @@ import { MetricsTracker } from "./metrics.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const MODEL = "openai/gpt-oss-120b";
+const BENCHMARK = process.env.BENCHMARK === "true";
+const MODEL = process.env.MODEL || "openai/gpt-oss-120b";
 const MAX_TOKENS = 8192;
 const CHALLENGE_URL = "https://serene-frangipane-7fd25b.netlify.app";
 const MAX_TURNS = 1000;
 const MAX_API_RETRIES = 5;
 
+const BENCHMARK_PROMPT = `You are a web agent that solves browser challenges. You have two tools: browser_navigate(url) and browser_evaluate(script). Use browser_evaluate to run JavaScript on the page and interact with it. Your goal is to complete all 30 challenge steps.`;
+
 const systemPromptPath = path.join(import.meta.dir, "prompts", "SYSTEM_BASE.md");
-const SYSTEM_PROMPT = fs.readFileSync(systemPromptPath, "utf-8");
+const SYSTEM_PROMPT = BENCHMARK ? BENCHMARK_PROMPT : fs.readFileSync(systemPromptPath, "utf-8");
 
 // Bypass: decode sessionStorage to get the code and submit directly.
 // Step 30 is special: validateCode(30) checks codes.get(31) which doesn't exist, Also bypass step 18 - 20 since there is a UI bug in there

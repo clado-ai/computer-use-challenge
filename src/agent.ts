@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const BENCHMARK = process.env.BENCHMARK === "true";
-const MODEL = process.env.MODEL || "openai/gpt-oss-120b";
+const MODEL = "anthropic/claude-sonnet-4.6";
 const MAX_TOKENS = 8192;
 const CHALLENGE_URL = "https://serene-frangipane-7fd25b.netlify.app";
 const MAX_TURNS = 1000;
@@ -141,14 +141,16 @@ export async function runAgent(): Promise<AgentResult> {
 
     if (!response) {
       console.log("[agent] all API retries failed, resetting context and continuing...");
-      messages.length = 0;
-      messages.push(
-        { role: "system", content: SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: `Continue solving the challenge. You are on step ${stepsCompleted + 1} of 30. Use browser_evaluate to read the current page state and continue.`,
-        },
-      );
+      if (!BENCHMARK) {
+        messages.length = 0;
+        messages.push(
+          { role: "system", content: SYSTEM_PROMPT },
+          {
+            role: "user",
+            content: `Continue solving the challenge. You are on step ${stepsCompleted + 1} of 30. Use browser_evaluate to read the current page state and continue.`,
+          },
+        );
+      }
       continue;
     }
 
@@ -272,20 +274,22 @@ export async function runAgent(): Promise<AgentResult> {
 
     // clear context on step transition
     if (stepsCompleted > prevStepsCompleted) {
-      console.log(`[context] step ${prevStepsCompleted} → ${stepsCompleted}, clearing context`);
+      console.log(`[context] step ${prevStepsCompleted} → ${stepsCompleted}${BENCHMARK ? '' : ', clearing context'}`);
       saveTrajectory();
       turnsOnSameStep = 0;
-      const nextStep = stepsCompleted + 1;
-      const lastToolMsg = [...messages].reverse().find(m => m.role === "tool");
-      const lastResult = lastToolMsg && "content" in lastToolMsg ? String(lastToolMsg.content) : "";
-      messages.length = 0;
-      messages.push(
-        { role: "system", content: SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: `You are now on step ${nextStep} of 30. The browser is already open — do NOT use browser_navigate.\n\nIMPORTANT: You must SOLVE the challenge first to get a NEW 6-character code. Do NOT try to submit yet.\n1. Read the challenge description below\n2. Identify the challenge type\n3. Solve it using the matching pattern\n4. Extract the 6-character code\n5. Then submit using the SUBMIT CODE pattern\n\nCurrent page:\n${lastResult}`,
-        },
-      );
+      if (!BENCHMARK) {
+        const nextStep = stepsCompleted + 1;
+        const lastToolMsg = [...messages].reverse().find(m => m.role === "tool");
+        const lastResult = lastToolMsg && "content" in lastToolMsg ? String(lastToolMsg.content) : "";
+        messages.length = 0;
+        messages.push(
+          { role: "system", content: SYSTEM_PROMPT },
+          {
+            role: "user",
+            content: `You are now on step ${nextStep} of 30. The browser is already open — do NOT use browser_navigate.\n\nIMPORTANT: You must SOLVE the challenge first to get a NEW 6-character code. Do NOT try to submit yet.\n1. Read the challenge description below\n2. Identify the challenge type\n3. Solve it using the matching pattern\n4. Extract the 6-character code\n5. Then submit using the SUBMIT CODE pattern\n\nCurrent page:\n${lastResult}`,
+          },
+        );
+      }
       prevStepsCompleted = stepsCompleted;
     }
     // stuck detection: sessionStorage bypass for steps 18-20 and 30 after 5 turns (The buggy case could be anywhere between 18 - 20 so just added a detection there for that)
@@ -308,21 +312,23 @@ export async function runAgent(): Promise<AgentResult> {
         saveTrajectory();
         turnsOnSameStep = 0;
         prevStepsCompleted = stepsCompleted;
-        const nextStep = stepsCompleted + 1;
-        const pageText = bypassResult.replace(/^BYPASS_OK: [A-Z0-9]{6}\n/, "");
-        messages.length = 0;
-        messages.push(
-          { role: "system", content: SYSTEM_PROMPT },
-          {
-            role: "user",
-            content: `You are now on step ${nextStep} of 30. The browser is already open — do NOT use browser_navigate.\n\nIMPORTANT: You must SOLVE the challenge first to get a NEW 6-character code. Do NOT try to submit yet.\n1. Read the challenge description below\n2. Identify the challenge type\n3. Solve it using the matching pattern\n4. Extract the 6-character code\n5. Then submit using the SUBMIT CODE pattern\n\nCurrent page:\n${pageText}`,
-          },
-        );
+        if (!BENCHMARK) {
+          const nextStep = stepsCompleted + 1;
+          const pageText = bypassResult.replace(/^BYPASS_OK: [A-Z0-9]{6}\n/, "");
+          messages.length = 0;
+          messages.push(
+            { role: "system", content: SYSTEM_PROMPT },
+            {
+              role: "user",
+              content: `You are now on step ${nextStep} of 30. The browser is already open — do NOT use browser_navigate.\n\nIMPORTANT: You must SOLVE the challenge first to get a NEW 6-character code. Do NOT try to submit yet.\n1. Read the challenge description below\n2. Identify the challenge type\n3. Solve it using the matching pattern\n4. Extract the 6-character code\n5. Then submit using the SUBMIT CODE pattern\n\nCurrent page:\n${pageText}`,
+            },
+          );
+        }
       }
       // If bypass failed, fall through — next iteration will hit the general stuck recovery at 15
     }
     // general stuck detection: hard reset context every 15 turns
-    else if (turnsOnSameStep > 0 && turnsOnSameStep % 15 === 0) {
+    else if (!BENCHMARK && turnsOnSameStep > 0 && turnsOnSameStep % 15 === 0) {
       const currentStep = stepsCompleted + 1;
       console.log(`[stuck] ${turnsOnSameStep} turns on step ${currentStep}, resetting context`);
       messages.length = 0;
